@@ -79,8 +79,18 @@ export default function CustomDrawerContent(props: any) {
       />
 
       <MenuItem
-        icon="calendar-outline"
+        icon="medkit-outline"
         label="Schedule"
+        routeName="schedule"
+        activeRoute={activeRoute}
+        onPress={() => router.replace("/schedule")}
+        colors={colors}
+        fontScale={fontScale}
+      />
+
+      <MenuItem
+        icon="calendar-outline"
+        label="Appointments"
         routeName="appointments"
         activeRoute={activeRoute}
         onPress={() => router.replace("/appointments")}

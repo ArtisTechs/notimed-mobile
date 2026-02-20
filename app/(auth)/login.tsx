@@ -258,7 +258,7 @@ export default function AuthScreen() {
                     ]}
                     onPress={() => {
                       if (validateLogin()) {
-                        router.replace("/(tabs)/dashboard-patient-view");
+                        router.replace("/(drawer)/dashboard-patient-view");
                       }
                     }}
                   >
