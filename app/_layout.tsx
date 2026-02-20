@@ -7,20 +7,29 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import "react-native-reanimated";
 
-import { useColorScheme } from "@/hooks/use-color-scheme";
+import { AppThemeProvider, useAppTheme } from "@/context/AppThemeContext";
 
-export default function RootLayout() {
-  const colorScheme = useColorScheme();
+function Navigation() {
+  const { resolvedScheme } = useAppTheme();
 
   return (
-    <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+    <ThemeProvider value={resolvedScheme === "dark" ? DarkTheme : DefaultTheme}>
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="(auth)" />
-        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="(drawer)" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
-      <StatusBar style="auto" />
+
+      <StatusBar style={resolvedScheme === "dark" ? "light" : "dark"} />
     </ThemeProvider>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <AppThemeProvider>
+      <Navigation />
+    </AppThemeProvider>
   );
 }

@@ -1,60 +1,157 @@
 import { router } from "expo-router";
 import React from "react";
-import { Pressable, StyleSheet } from "react-native";
+import { Image, Pressable, StyleSheet, View } from "react-native";
 
 import { ThemedText } from "@/components/themed-text";
-import { ThemedView } from "@/components/themed-view";
 import { Colors } from "@/constants/theme";
-import { useColorScheme } from "@/hooks/use-color-scheme";
+import { useAppTheme } from "@/context/AppThemeContext";
 
 export default function GetStarted() {
-  const scheme = useColorScheme() ?? "light";
-  const colors = Colors[scheme];
+  const { resolvedScheme, fontScale } = useAppTheme();
+  const colors = Colors[resolvedScheme];
 
   return (
-    <ThemedView style={styles.container}>
-      <ThemedText type="title" style={styles.title}>
-        Welcome
-      </ThemedText>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Top Hero Section */}
+      <View style={[styles.hero, { backgroundColor: colors.tint }]}>
+        <Image
+          source={require("@/assets/images/notimed-logo-transparent.png")}
+          style={styles.heroImage}
+          resizeMode="contain"
+        />
 
-      <ThemedText type="default" style={styles.subtitle}>
-        Start using the app in a few simple steps.
-      </ThemedText>
-
-      <Pressable
-        style={[styles.button, { backgroundColor: colors.tint }]}
-        onPress={() => router.replace("/(auth)/login")}
-      >
-        <ThemedText style={[styles.buttonText, { color: colors.background }]}>
-          Get Started
+        <ThemedText
+          style={[
+            styles.heroBrand,
+            {
+              color: colors.buttonText,
+              fontSize: 32 * fontScale,
+            },
+          ]}
+        >
+          NotiMed
         </ThemedText>
-      </Pressable>
-    </ThemedView>
+      </View>
+
+      {/* Bottom Content */}
+      <View
+        style={[
+          styles.bottomContainer,
+          { backgroundColor: colors.card ?? colors.background },
+        ]}
+      >
+        <ThemedText
+          style={[
+            styles.smallTitle,
+            {
+              color: colors.text,
+              fontSize: 18 * fontScale,
+            },
+          ]}
+        >
+          Manage Your Health
+        </ThemedText>
+
+        <ThemedText
+          style={[
+            styles.bigTitle,
+            {
+              color: colors.text,
+              fontSize: 28 * fontScale,
+            },
+          ]}
+        >
+          STAY ON TRACK
+        </ThemedText>
+
+        <ThemedText
+          style={[
+            styles.description,
+            {
+              color: colors.text,
+              opacity: 0.7,
+              fontSize: 14 * fontScale,
+            },
+          ]}
+        >
+          Monitor medications and appointments with clarity and control.
+        </ThemedText>
+
+        <Pressable
+          style={[styles.ctaButton, { backgroundColor: colors.tint }]}
+          onPress={() => router.replace("/(auth)/login")}
+        >
+          <ThemedText
+            style={[
+              styles.ctaText,
+              {
+                color: colors.buttonText,
+                fontSize: 16 * fontScale,
+              },
+            ]}
+          >
+            Get Started
+          </ThemedText>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: "center",
+  },
+
+  hero: {
+    height: "45%",
+    borderBottomRightRadius: 80,
     alignItems: "center",
-    padding: 24,
+    justifyContent: "flex-end",
   },
-  title: {
-    marginBottom: 12,
+
+  heroImage: {
+    width: 140,
+    height: 140,
   },
-  subtitle: {
+
+  heroBrand: {
+    fontWeight: "800",
+    letterSpacing: 1,
+    marginBottom: 20,
+  },
+
+  bottomContainer: {
+    flex: 1,
+    borderTopLeftRadius: 40,
+    paddingHorizontal: 32,
+    paddingTop: 60,
+    alignItems: "center",
+  },
+
+  smallTitle: {
+    marginBottom: 8,
+  },
+
+  bigTitle: {
+    fontWeight: "800",
+    letterSpacing: 1,
+    marginBottom: 16,
+  },
+
+  description: {
     textAlign: "center",
-    opacity: 0.8,
-    marginBottom: 32,
+    lineHeight: 22,
+    marginBottom: 40,
   },
-  button: {
-    paddingVertical: 14,
-    paddingHorizontal: 40,
-    borderRadius: 10,
+
+  ctaButton: {
+    paddingVertical: 16,
+    paddingHorizontal: 48,
+    borderRadius: 30,
   },
-  buttonText: {
-    color: "#fff",
-    fontWeight: "600",
+
+  ctaText: {
+    fontWeight: "700",
   },
 });
