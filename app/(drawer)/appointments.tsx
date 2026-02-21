@@ -96,15 +96,28 @@ export default function AppointmentScreen() {
     >
       {/* Header */}
       <View style={styles.headerRow}>
-        <ThemedText
-          style={{
-            fontSize: 20 * fontScale,
-            fontWeight: "700",
-            color: colors.text,
-          }}
-        >
-          APPOINTMENTS
-        </ThemedText>
+        <View>
+          <ThemedText
+            style={{
+              fontSize: 20 * fontScale,
+              fontWeight: "700",
+              color: colors.text,
+            }}
+          >
+            APPOINTMENTS
+          </ThemedText>
+
+          <ThemedText
+            style={{
+              marginTop: 4,
+              fontSize: 13 * fontScale,
+              color: colors.icon,
+              letterSpacing: 0.5,
+            }}
+          >
+            Manage and track your medical visits
+          </ThemedText>
+        </View>
 
         <Pressable style={[styles.addButton, { borderColor: colors.tint }]}>
           <Ionicons name="add" size={18} color={colors.tint} />
@@ -382,7 +395,7 @@ const styles = StyleSheet.create({
 
   thTime: { width: 80, fontWeight: "700" },
   thTitle: { flex: 1, fontWeight: "700" },
-  thStatus: { width: 120, fontWeight: "700", textAlign: "right" },
+  thStatus: { width: 100, fontWeight: "700", textAlign: "right" },
 
   tdTime: { width: 80 },
   tdTitle: { flex: 1 },

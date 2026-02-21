@@ -81,10 +81,7 @@ export default function DrawerLayout() {
           </View>
         ),
       })}
-    >
-      <Drawer.Screen name="dashboard-patient-view" />
-      <Drawer.Screen name="profile" />
-    </Drawer>
+    ></Drawer>
   );
 }
 
@@ -92,8 +89,6 @@ function getTitle(routeName: string) {
   switch (routeName) {
     case "dashboard-patient-view":
       return "Dashboard";
-    case "profile":
-      return "Profile";
     default:
       return "";
   }

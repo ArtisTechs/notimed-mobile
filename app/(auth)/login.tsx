@@ -15,6 +15,8 @@ import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
+import { useAppView } from "@/context/AppViewContext";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
 
 type Mode = "login" | "signup";
@@ -22,6 +24,7 @@ type Mode = "login" | "signup";
 export default function AuthScreen() {
   const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
+  const { setView } = useAppView();
 
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
@@ -256,8 +259,22 @@ export default function AuthScreen() {
                       styles.primaryButton,
                       { backgroundColor: colors.tint },
                     ]}
-                    onPress={() => {
-                      if (validateLogin()) {
+                    onPress={async () => {
+                      if (!validateLogin()) return;
+
+                      const mockRole: "patient" | "caregiver" = email.includes(
+                        "care",
+                      )
+                        ? "caregiver"
+                        : "patient";
+
+                      await AsyncStorage.setItem("userRole", mockRole);
+
+                      setView(mockRole);
+
+                      if (mockRole === "caregiver") {
+                        router.replace("/(drawer)/dashboard-caregiver-view");
+                      } else {
                         router.replace("/(drawer)/dashboard-patient-view");
                       }
                     }}

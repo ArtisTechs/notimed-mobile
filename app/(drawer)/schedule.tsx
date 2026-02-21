@@ -108,16 +108,30 @@ export default function ScheduleScreen() {
       showsVerticalScrollIndicator={false}
     >
       {/* Header */}
+      {/* Header */}
       <View style={styles.headerRow}>
-        <ThemedText
-          style={{
-            fontSize: 20 * fontScale,
-            fontWeight: "700",
-            color: colors.text,
-          }}
-        >
-          MEDICATION SCHEDULE
-        </ThemedText>
+        <View>
+          <ThemedText
+            style={{
+              fontSize: 20 * fontScale,
+              fontWeight: "700",
+              color: colors.text,
+            }}
+          >
+            MEDICATION SCHEDULE
+          </ThemedText>
+
+          <ThemedText
+            style={{
+              marginTop: 4,
+              fontSize: 13 * fontScale,
+              color: colors.icon,
+              letterSpacing: 0.5,
+            }}
+          >
+            Manage and track your daily medications
+          </ThemedText>
+        </View>
 
         <Pressable style={[styles.addButton, { borderColor: colors.tint }]}>
           <Ionicons name="add" size={18} color={colors.tint} />

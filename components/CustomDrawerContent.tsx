@@ -1,8 +1,11 @@
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
+import { useAppView } from "@/context/AppViewContext";
 import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DrawerContentScrollView } from "@react-navigation/drawer";
 import { router } from "expo-router";
+import { useEffect, useState } from "react";
 import { Image, Pressable, Text, View } from "react-native";
 
 export default function CustomDrawerContent(props: any) {
@@ -15,8 +18,33 @@ export default function CustomDrawerContent(props: any) {
     fontScale,
   } = useAppTheme();
 
+  const { setView } = useAppView();
   const colors = Colors[resolvedScheme];
   const activeRoute = props.state.routeNames[props.state.index];
+
+  const [userRole, setUserRole] = useState<"patient" | "caregiver">("patient");
+
+  useEffect(() => {
+    const loadRole = async () => {
+      const role = await AsyncStorage.getItem("userRole");
+      if (role === "caregiver") {
+        setUserRole("caregiver");
+      } else {
+        setUserRole("patient");
+      }
+    };
+    loadRole();
+  }, []);
+
+  const isCaregiver = userRole === "caregiver";
+
+  const dashboardRoute = isCaregiver
+    ? "dashboard-caregiver-view"
+    : "dashboard-patient-view";
+
+  const dashboardPath = isCaregiver
+    ? "/dashboard-caregiver-view"
+    : "/dashboard-patient-view";
 
   return (
     <DrawerContentScrollView
@@ -54,7 +82,9 @@ export default function CustomDrawerContent(props: any) {
             fontSize: 12 * fontScale,
           }}
         >
-          Manage your health and app settings.
+          {isCaregiver
+            ? "Manage connected patients and care schedules."
+            : "Manage your health and app settings."}
         </Text>
       </View>
 
@@ -71,16 +101,18 @@ export default function CustomDrawerContent(props: any) {
       <MenuItem
         icon="grid-outline"
         label="Dashboard"
-        routeName="dashboard-patient-view"
+        routeName={dashboardRoute}
         activeRoute={activeRoute}
-        onPress={() => router.replace("/dashboard-patient-view")}
+        onPress={() => router.replace(dashboardPath)}
         colors={colors}
         fontScale={fontScale}
       />
 
       <MenuItem
         icon="medkit-outline"
-        label="Schedule"
+        label={
+          isCaregiver ? "Patient Medication Schedule" : "Medication Schedule"
+        }
         routeName="schedule"
         activeRoute={activeRoute}
         onPress={() => router.replace("/schedule")}
@@ -90,7 +122,7 @@ export default function CustomDrawerContent(props: any) {
 
       <MenuItem
         icon="calendar-outline"
-        label="Appointments"
+        label={isCaregiver ? "Patient Appointments" : "Appointments"}
         routeName="appointments"
         activeRoute={activeRoute}
         onPress={() => router.replace("/appointments")}
@@ -100,7 +132,7 @@ export default function CustomDrawerContent(props: any) {
 
       <MenuItem
         icon="time-outline"
-        label="View History"
+        label={isCaregiver ? "Patient History" : "View History"}
         routeName="history"
         activeRoute={activeRoute}
         onPress={() => router.replace("/history")}
@@ -108,15 +140,29 @@ export default function CustomDrawerContent(props: any) {
         fontScale={fontScale}
       />
 
-      <MenuItem
-        icon="person-outline"
-        label="Caregiver Access"
-        routeName="profile"
-        activeRoute={activeRoute}
-        onPress={() => router.replace("/profile")}
-        colors={colors}
-        fontScale={fontScale}
-      />
+      {isCaregiver && (
+        <MenuItem
+          icon="people-outline"
+          label="Connected Patients"
+          routeName="patients"
+          activeRoute={activeRoute}
+          onPress={() => router.replace("/patients")}
+          colors={colors}
+          fontScale={fontScale}
+        />
+      )}
+
+      {!isCaregiver && (
+        <MenuItem
+          icon="person-outline"
+          label="Caregiver Access"
+          routeName="caregivers"
+          activeRoute={activeRoute}
+          onPress={() => router.replace("/caregivers")}
+          colors={colors}
+          fontScale={fontScale}
+        />
+      )}
 
       <View
         style={{
@@ -203,6 +249,11 @@ export default function CustomDrawerContent(props: any) {
           paddingVertical: 12,
           borderRadius: 8,
           alignItems: "center",
+        }}
+        onPress={async () => {
+          await AsyncStorage.removeItem("userRole");
+          setView(null);
+          router.replace("/(auth)/get-started");
         }}
       >
         <Text

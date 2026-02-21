@@ -67,17 +67,17 @@ const caregivers = [
   {
     id: "cg-1",
     name: "Maria Santos",
-    relationship: "Daughter",
+    email: "maria.santos@example.com",
   },
   {
     id: "cg-2",
     name: "Juan Dela Cruz",
-    relationship: "Son",
+    email: "juan.dela.cruz@example.com",
   },
   {
     id: "cg-3",
     name: "Ana Reyes",
-    relationship: "Nurse",
+    email: "ana.reyes@example.com",
   },
 ];
 
@@ -96,7 +96,11 @@ export default function PatientDashboard() {
         <ThemedText
           style={[
             styles.greeting,
-            { color: colors.text, fontSize: 22 * fontScale },
+            {
+              color: colors.text,
+              fontSize: 22 * fontScale,
+              textTransform: "capitalize",
+            },
           ]}
         >
           Greetings, {fullName}
@@ -195,6 +199,8 @@ export default function PatientDashboard() {
                         color: colors.text,
                         fontWeight: "700",
                         fontSize: 16 * fontScale,
+                        textTransform: "capitalize",
+                        width: 150,
                       }}
                     >
                       {med.name.toLowerCase()}
@@ -311,6 +317,7 @@ export default function PatientDashboard() {
                       color: colors.text,
                       fontWeight: "700",
                       fontSize: 16 * fontScale,
+                      textTransform: "capitalize",
                     }}
                   >
                     {app.title}
@@ -440,12 +447,13 @@ export default function PatientDashboard() {
                   color: colors.text,
                   fontWeight: "700",
                   fontSize: 15 * fontScale,
+                  textTransform: "capitalize",
                 }}
               >
                 {cg.name}
               </ThemedText>
               <ThemedText style={{ color: colors.icon }}>
-                {cg.relationship}
+                {cg.email || "No email provided"}
               </ThemedText>
             </View>
           ))

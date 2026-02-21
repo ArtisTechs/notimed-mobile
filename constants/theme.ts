@@ -15,12 +15,13 @@ export const Colors = {
     background: "#ffffff",
     card: "#F4F7FA",
     border: "#E3E8EF",
-    inputBackground: "#F9FBFD", // added
+    inputBackground: "#F9FBFD",
     tint: tintColorLight,
     icon: "#687076",
     tabIconDefault: "#687076",
     tabIconSelected: tintColorLight,
     error: "#D92D20",
+    success: "#16A34A", // added (green-600 equivalent)
   },
   dark: {
     text: "#ECEDEE",
@@ -28,12 +29,13 @@ export const Colors = {
     background: "#000717",
     card: "#060e21",
     border: "#060e21",
-    inputBackground: "#060e21", // added
+    inputBackground: "#060e21",
     tint: tintColorDark,
     icon: "#9BA1A6",
     tabIconDefault: "#9BA1A6",
     tabIconSelected: tintColorDark,
     error: "#F04438",
+    success: "#22C55E", // added (brighter green for dark mode contrast)
   },
 };
 
