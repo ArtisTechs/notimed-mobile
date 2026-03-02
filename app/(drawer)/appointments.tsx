@@ -6,6 +6,7 @@ import FullscreenLoader from "@/components/FullscreenLoader";
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
+import { rescheduleCurrentUserNotifications } from "@/services/alarmScheduler";
 import {
   AppointmentResponse,
   appointmentsApi,
@@ -15,7 +16,13 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Picker } from "@react-native-picker/picker";
 import React, { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View
+} from "react-native";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const toYmd = (d: Date) =>
@@ -157,6 +164,15 @@ export default function AppointmentScreen() {
     return selectedPatientId || "";
   }, [user.id, isCaregiver, selectedPatientId]);
 
+  const toUiAppointment = (a: AppointmentResponse): AppointmentPayload => ({
+    id: a.id,
+    userId: a.userId,
+    title: a.title,
+    appointmentDate: a.appointmentDate,
+    appointmentTime: a.appointmentTime,
+    notes: a.notes ?? undefined,
+  });
+
   const refetchAppts = React.useCallback(async () => {
     if (!targetUserId) return;
 
@@ -170,6 +186,7 @@ export default function AppointmentScreen() {
       });
 
       setAppointments(ui);
+      await rescheduleCurrentUserNotifications();
     } catch {
       // keep existing list
     } finally {
@@ -223,14 +240,26 @@ export default function AppointmentScreen() {
   const [editingAppt, setEditingAppt] =
     React.useState<AppointmentPayload | null>(null);
 
-  const toUiAppointment = (a: AppointmentResponse): AppointmentPayload => ({
-    id: a.id,
-    userId: a.userId,
-    title: a.title,
-    appointmentDate: a.appointmentDate,
-    appointmentTime: a.appointmentTime,
-    notes: a.notes ?? undefined,
-  });
+  // DELETE CONFIRM MODAL
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
+  const [deleteTarget, setDeleteTarget] =
+    React.useState<AppointmentPayload | null>(null);
+
+  const openDeleteConfirm = React.useCallback((appt: AppointmentPayload) => {
+    setDeleteTarget(appt);
+    setDeleteConfirmOpen(true);
+  }, []);
+
+  const closeDeleteConfirm = React.useCallback(() => {
+    setDeleteConfirmOpen(false);
+    setDeleteTarget(null);
+  }, []);
+
+  const confirmDelete = React.useCallback(async () => {
+    if (!deleteTarget) return;
+    await handleDeleteAppointment(deleteTarget.id);
+    closeDeleteConfirm();
+  }, [deleteTarget, closeDeleteConfirm]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -287,6 +316,7 @@ export default function AppointmentScreen() {
         return aKey.localeCompare(bKey);
       }),
     );
+    await rescheduleCurrentUserNotifications();
   };
 
   const handleUpdateAppointment = async (payload: AppointmentPayload) => {
@@ -310,6 +340,7 @@ export default function AppointmentScreen() {
           return aKey.localeCompare(bKey);
         }),
     );
+    await rescheduleCurrentUserNotifications();
   };
 
   const handleDeleteAppointment = async (id: string) => {
@@ -319,6 +350,7 @@ export default function AppointmentScreen() {
       await appointmentsApi.delete(targetUserId, id);
     } finally {
       setAppointments((prev) => prev.filter((a) => a.id !== id));
+      await rescheduleCurrentUserNotifications();
     }
   };
 
@@ -667,7 +699,7 @@ export default function AppointmentScreen() {
 
                     <Pressable
                       style={styles.tdDel}
-                      onPress={() => handleDeleteAppointment(a.id)}
+                      onPress={() => openDeleteConfirm(a)}
                       hitSlop={10}
                     >
                       <Ionicons
@@ -700,6 +732,113 @@ export default function AppointmentScreen() {
           </ScrollView>
         </View>
       </ScrollView>
+
+      {/* DELETE CONFIRM MODAL */}
+      <Modal
+        transparent
+        visible={deleteConfirmOpen}
+        animationType="fade"
+        onRequestClose={closeDeleteConfirm}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={closeDeleteConfirm} />
+
+        <View style={styles.modalCenter}>
+          <View
+            style={[
+              styles.modalCard,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <ThemedText
+              style={{
+                fontSize: 16 * fontScale,
+                fontWeight: "800",
+                color: colors.text,
+              }}
+            >
+              DELETE APPOINTMENT?
+            </ThemedText>
+
+            <ThemedText
+              style={{
+                marginTop: 8,
+                fontSize: 13 * fontScale,
+                color: colors.icon,
+                lineHeight: 18 * fontScale,
+              }}
+              numberOfLines={3}
+            >
+              {deleteTarget
+                ? `This will permanently delete "${deleteTarget.title}".`
+                : "This will permanently delete the appointment."}
+            </ThemedText>
+
+            {deleteTarget?.appointmentTime ? (
+              <ThemedText
+                style={{
+                  marginTop: 6,
+                  fontSize: 12 * fontScale,
+                  color: colors.icon,
+                }}
+              >
+                {deleteTarget.appointmentDate} •{" "}
+                {formatTime12h(deleteTarget.appointmentTime)}
+              </ThemedText>
+            ) : null}
+
+            <View style={styles.modalButtons}>
+              <Pressable
+                onPress={closeDeleteConfirm}
+                disabled={!!deleteTarget && refetchingAppts}
+                style={[
+                  styles.modalBtn,
+                  {
+                    borderColor: colors.border,
+                    backgroundColor: colors.inputBackground,
+                    opacity: !!deleteTarget && refetchingAppts ? 0.6 : 1,
+                  },
+                ]}
+              >
+                <ThemedText
+                  style={{
+                    fontSize: 13 * fontScale,
+                    fontWeight: "700",
+                    color: colors.text,
+                  }}
+                >
+                  CANCEL
+                </ThemedText>
+              </Pressable>
+
+              <Pressable
+                onPress={confirmDelete}
+                disabled={!deleteTarget}
+                style={[
+                  styles.modalBtn,
+                  {
+                    backgroundColor: colors.error,
+                    borderColor: colors.error,
+                    opacity: !deleteTarget ? 0.6 : 1,
+                  },
+                ]}
+              >
+                <ThemedText
+                  style={{
+                    fontSize: 13 * fontScale,
+                    fontWeight: "800",
+                    color: colors.buttonText,
+                  }}
+                >
+                  DELETE
+                </ThemedText>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -818,4 +957,37 @@ const styles = StyleSheet.create({
   tdTime: { width: 120 },
   tdTitle: { width: 220 },
   tdNotes: { width: 250 },
+
+  // MODAL
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+
+  modalCenter: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+
+  modalCard: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+  },
+
+  modalButtons: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 16,
+  },
+
+  modalBtn: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });

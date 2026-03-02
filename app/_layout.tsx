@@ -17,7 +17,6 @@ import { AppViewProvider } from "@/context/AppViewContext";
 
 Notifications.setNotificationHandler({
   handleNotification: async (): Promise<NotificationBehavior> => ({
-    shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
     shouldShowBanner: true,
@@ -48,73 +47,89 @@ async function initAndroidNotificationChannels() {
 async function ensureNotificationPermission() {
   const current = await Notifications.getPermissionsAsync();
   if (current.granted) return true;
+
   const req = await Notifications.requestPermissionsAsync();
   return req.granted;
 }
 
 function routeFromNotificationData(data: any) {
-  if (data?.kind === "MEDICATION") {
-    router.replace({
-      pathname: "/reminder",
-      params: {
-        kind: "MEDICATION",
-        medId: data.medId,
-        name: data.name,
-        dose: data.dose,
-        notes: data.notes ?? "",
-        date: data.date,
-        time: data.time,
-      },
-    });
-    return true;
-  }
+  if (!data?.kind) return false;
 
-  if (data?.kind === "APPOINTMENT") {
-    router.replace({
-      pathname: "/reminder",
-      params: {
-        kind: "APPOINTMENT",
-        apptId: data.apptId,
-        title: data.title,
-        notes: data.notes ?? "",
-        date: data.date,
-        time: data.time,
-      },
-    });
-    return true;
-  }
+  // small delay ensures navigation is mounted
+  setTimeout(() => {
+    if (data.kind === "MEDICATION") {
+      router.push({
+        pathname: "/(drawer)/reminder",
+        params: {
+          kind: "MEDICATION",
+          userId: data.userId,
+          medId: data.medId,
+          name: data.name,
+          dose: data.dose,
+          notes: data.notes ?? "",
+          date: data.date,
+          time: data.time,
+          isReAlarm: String(Boolean(data.isReAlarm)),
+          reminderOffsetMinutes: String(data.reminderOffsetMinutes ?? ""),
+          reAlarmAfterMinutes: String(data.reAlarmAfterMinutes ?? ""),
+        },
+      });
+      return;
+    }
 
-  return false;
+    if (data.kind === "APPOINTMENT") {
+      router.push({
+        pathname: "/(drawer)/reminder",
+        params: {
+          kind: "APPOINTMENT",
+          userId: data.userId,
+          apptId: data.apptId,
+          title: data.title,
+          notes: data.notes ?? "",
+          date: data.date,
+          time: data.time,
+        },
+      });
+    }
+  }, 0);
+
+  return true;
 }
 
 function Navigation() {
   const { resolvedScheme } = useAppTheme();
 
   React.useEffect(() => {
-    let subscription: Notifications.Subscription | undefined;
+    let tapSub: Notifications.Subscription | undefined;
+    let fgSub: Notifications.Subscription | undefined;
 
     (async () => {
       await initAndroidNotificationChannels();
-      await ensureNotificationPermission();
 
-      // COLD START: app opened from killed state via notification tap
+      const granted = await ensureNotificationPermission();
+      if (!granted) return;
+
+      // COLD START
       const last = await Notifications.getLastNotificationResponseAsync();
       const lastData: any = last?.notification.request.content.data;
-      if (lastData) {
-        routeFromNotificationData(lastData);
-      }
+      if (lastData) routeFromNotificationData(lastData);
 
-      // NORMAL: app already running/backgrounded, user taps notification
-      subscription = Notifications.addNotificationResponseReceivedListener(
-        (response) => {
-          const data: any = response.notification.request.content.data;
-          routeFromNotificationData(data);
-        },
-      );
+      // FOREGROUND (alarm fires while app open)
+      fgSub = Notifications.addNotificationReceivedListener((notif) => {
+        const data: any = notif.request.content.data;
+        routeFromNotificationData(data);
+      });
+
+      // BACKGROUND (user taps notification)
+      tapSub = Notifications.addNotificationResponseReceivedListener((resp) => {
+        const data: any = resp.notification.request.content.data;
+        routeFromNotificationData(data);
+      });
     })();
 
     return () => {
-      if (subscription) subscription.remove();
+      fgSub?.remove();
+      tapSub?.remove();
     };
   }, []);
 

@@ -1,3 +1,4 @@
+// src/services/notificationsPermission.ts
 import * as Notifications from "expo-notifications";
 
 export async function ensureNotifPermission() {

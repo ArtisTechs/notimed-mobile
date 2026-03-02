@@ -1,3 +1,4 @@
+// PatientDashboard.tsx
 import AddAppointmentModal, {
   AppointmentPayload,
 } from "@/components/AddAppointmentModal";
@@ -7,7 +8,10 @@ import AddMedicationModal, {
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
-import { rescheduleAllFromCache } from "@/services/alarmScheduler";
+import {
+  rescheduleAllFromCache,
+  rescheduleCurrentUserNotifications,
+} from "@/services/alarmScheduler";
 import {
   AppointmentResponse,
   appointmentsApi,
@@ -23,6 +27,7 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React from "react";
 import {
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -122,8 +127,6 @@ const isMedicationDueOn = (m: MedicationPayload, dateIso: string) => {
     return diffMonths >= 0 && diffMonths % interval === 0;
   }
 
-  // if your modal supports "custom" (day/week/month) in some builds:
-  // treat it as interval+unit. If unit missing, default to day.
   if ((type as any) === "custom") {
     const unit = (m.repeat as any).unit ?? "day";
     if (unit === "day") {
@@ -165,7 +168,39 @@ export default function PatientDashboard() {
   });
 
   const fullName = `${user.firstName} ${user.middleName || ""} ${user.lastName}`;
-  const caregivers = user.connectedUsers ?? [];
+
+  // ==========================
+  // DELETE CONFIRM MODAL STATE (shared)
+  // ==========================
+  type DeleteKind = "MED" | "APPT";
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
+  const [deleteKind, setDeleteKind] = React.useState<DeleteKind>("MED");
+  const [deleteTargetId, setDeleteTargetId] = React.useState<string>("");
+  const [deleteTitle, setDeleteTitle] = React.useState<string>("");
+  const [deleteSubtitle, setDeleteSubtitle] = React.useState<string>("");
+
+  const openDeleteConfirm = React.useCallback(
+    (args: {
+      kind: DeleteKind;
+      id: string;
+      title: string;
+      subtitle?: string;
+    }) => {
+      setDeleteKind(args.kind);
+      setDeleteTargetId(args.id);
+      setDeleteTitle(args.title);
+      setDeleteSubtitle(args.subtitle ?? "");
+      setDeleteConfirmOpen(true);
+    },
+    [],
+  );
+
+  const closeDeleteConfirm = React.useCallback(() => {
+    setDeleteConfirmOpen(false);
+    setDeleteTargetId("");
+    setDeleteTitle("");
+    setDeleteSubtitle("");
+  }, []);
 
   // ==========================
   // APPOINTMENTS (API integrated)
@@ -192,7 +227,7 @@ export default function PatientDashboard() {
   }, [user.id]);
 
   // ==========================
-  // MEDICATIONS (keep your existing code below)
+  // MEDICATIONS
   // ==========================
   const [medications, setMedications] = React.useState<MedicationPayload[]>([]);
   const [medModalOpen, setMedModalOpen] = React.useState(false);
@@ -277,9 +312,7 @@ export default function PatientDashboard() {
         ]);
 
         if (mounted) setUser(details);
-      } catch {
-        // keep cached
-      }
+      } catch {}
     };
 
     load();
@@ -297,27 +330,23 @@ export default function PatientDashboard() {
     const loadAppts = async () => {
       if (!user.id) return;
 
-      // 1) cached
       try {
         const cached = await AsyncStorage.getItem(apptsKey);
         if (mounted && cached) setAppointments(JSON.parse(cached));
       } catch {}
 
-      // 2) API
       try {
         const list = await appointmentsApi.list(user.id);
         const ui = list.map(toUiAppointment).sort((a, b) => {
-          const aKey = `${a.appointmentDate} ${a.appointmentTime}`;
-          const bKey = `${b.appointmentDate} ${b.appointmentTime}`;
+          const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
+          const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
           return aKey.localeCompare(bKey);
         });
 
         if (!mounted) return;
         setAppointments(ui);
         await AsyncStorage.setItem(apptsKey, JSON.stringify(ui));
-      } catch {
-        // keep cached
-      }
+      } catch {}
     };
 
     loadAppts();
@@ -367,13 +396,14 @@ export default function PatientDashboard() {
     const createdUi = toUiAppointment(created);
 
     const next = [createdUi, ...appointments].sort((a, b) => {
-      const aKey = `${a.appointmentDate} ${a.appointmentTime}`;
-      const bKey = `${b.appointmentDate} ${b.appointmentTime}`;
+      const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
+      const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
       return aKey.localeCompare(bKey);
     });
 
     setAppointments(next);
     await persistAppts(next);
+    await rescheduleCurrentUserNotifications();
   };
 
   const handleUpdateAppointment = async (payload: AppointmentPayload) => {
@@ -391,13 +421,14 @@ export default function PatientDashboard() {
     const next = appointments
       .map((a) => (a.id === updatedUi.id ? updatedUi : a))
       .sort((a, b) => {
-        const aKey = `${a.appointmentDate} ${a.appointmentTime}`;
-        const bKey = `${b.appointmentDate} ${b.appointmentTime}`;
+        const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
+        const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
         return aKey.localeCompare(bKey);
       });
 
     setAppointments(next);
     await persistAppts(next);
+    await rescheduleCurrentUserNotifications();
   };
 
   const handleDeleteAppointment = async (id: string) => {
@@ -407,6 +438,7 @@ export default function PatientDashboard() {
       const next = appointments.filter((a) => a.id !== id);
       setAppointments(next);
       await persistAppts(next);
+      await rescheduleCurrentUserNotifications();
     }
   };
 
@@ -415,7 +447,6 @@ export default function PatientDashboard() {
 
     setRefreshing(true);
     try {
-      // refresh user details (same logic as your USER LOAD effect)
       const userId = await AsyncStorage.getItem("userId");
       if (userId) {
         const details = await authApi.getUserById(userId);
@@ -434,7 +465,6 @@ export default function PatientDashboard() {
         setUser(details);
       }
 
-      // refresh appointments (API)
       const apptList = await appointmentsApi.list(user.id);
       const apptUi = apptList.map(toUiAppointment).sort((a, b) => {
         const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
@@ -459,8 +489,13 @@ export default function PatientDashboard() {
 
   React.useEffect(() => {
     if (!user.id) return;
-    rescheduleAllFromCache({ medications, appointments, horizonDays: 14 });
-  }, [user.id, medications, appointments]);
+    rescheduleAllFromCache({
+      medications,
+      appointments,
+      horizonDays: 14,
+      userRole: user.role,
+    });
+  }, [user.id, user.role, medications, appointments]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -477,7 +512,11 @@ export default function PatientDashboard() {
         const list = await medicationsApi.listByUser(user.id);
         const ui = list
           .map(toUiMedication)
-          .sort((a, b) => a.schedule.time.localeCompare(b.schedule.time));
+          .sort((a, b) =>
+            normalizeTime(a.schedule.time).localeCompare(
+              normalizeTime(b.schedule.time),
+            ),
+          );
 
         if (!mounted) return;
         setMedications(ui);
@@ -504,11 +543,14 @@ export default function PatientDashboard() {
     const createdUi = toUiMedication(created);
 
     const next = [createdUi, ...medications].sort((a, b) =>
-      a.schedule.time.localeCompare(b.schedule.time),
+      normalizeTime(a.schedule.time).localeCompare(
+        normalizeTime(b.schedule.time),
+      ),
     );
 
     setMedications(next);
     await persistMeds(next);
+    await rescheduleCurrentUserNotifications();
   };
 
   const handleUpdateMedication = async (payload: MedicationPayload) => {
@@ -520,10 +562,15 @@ export default function PatientDashboard() {
 
     const next = medications
       .map((m) => (m.id === updatedUi.id ? updatedUi : m))
-      .sort((a, b) => a.schedule.time.localeCompare(b.schedule.time));
+      .sort((a, b) =>
+        normalizeTime(a.schedule.time).localeCompare(
+          normalizeTime(b.schedule.time),
+        ),
+      );
 
     setMedications(next);
     await persistMeds(next);
+    await rescheduleCurrentUserNotifications();
   };
 
   const handleDeleteMedication = async (id: string) => {
@@ -533,8 +580,26 @@ export default function PatientDashboard() {
       const next = medications.filter((m) => m.id !== id);
       setMedications(next);
       await persistMeds(next);
+      await rescheduleCurrentUserNotifications();
     }
   };
+
+  // ==========================
+  // CONFIRM DELETE ACTION
+  // ==========================
+  const confirmDelete = React.useCallback(async () => {
+    if (!deleteTargetId) return;
+
+    if (deleteKind === "MED") {
+      await handleDeleteMedication(deleteTargetId);
+    } else {
+      await handleDeleteAppointment(deleteTargetId);
+    }
+
+    closeDeleteConfirm();
+  }, [deleteTargetId, deleteKind, closeDeleteConfirm]);
+
+  const caregivers = user.connectedUsers ?? [];
 
   return (
     <>
@@ -743,10 +808,21 @@ export default function PatientDashboard() {
                   </Pressable>
 
                   <Pressable
-                    onPress={() => handleDeleteMedication(med.id)}
+                    onPress={() =>
+                      openDeleteConfirm({
+                        kind: "MED",
+                        id: med.id,
+                        title: "DELETE MEDICATION?",
+                        subtitle: `This will permanently delete "${med.name}".`,
+                      })
+                    }
                     hitSlop={10}
                   >
-                    <Ionicons name="trash-outline" size={18} color="red" />
+                    <Ionicons
+                      name="trash-outline"
+                      size={18}
+                      color={colors.error}
+                    />
                   </Pressable>
                 </View>
               </View>
@@ -873,10 +949,21 @@ export default function PatientDashboard() {
                   </Pressable>
 
                   <Pressable
-                    onPress={() => handleDeleteAppointment(app.id)}
+                    onPress={() =>
+                      openDeleteConfirm({
+                        kind: "APPT",
+                        id: app.id,
+                        title: "DELETE APPOINTMENT?",
+                        subtitle: `This will permanently delete "${app.title}".`,
+                      })
+                    }
                     hitSlop={10}
                   >
-                    <Ionicons name="trash-outline" size={18} color="red" />
+                    <Ionicons
+                      name="trash-outline"
+                      size={18}
+                      color={colors.error}
+                    />
                   </Pressable>
                 </View>
               </View>
@@ -1008,6 +1095,93 @@ export default function PatientDashboard() {
           )}
         </View>
       </ScrollView>
+
+      {/* DELETE CONFIRM MODAL */}
+      <Modal
+        transparent
+        visible={deleteConfirmOpen}
+        animationType="fade"
+        onRequestClose={closeDeleteConfirm}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={closeDeleteConfirm} />
+
+        <View style={styles.modalCenter}>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <ThemedText
+              style={{
+                fontSize: 16 * fontScale,
+                fontWeight: "800",
+                color: colors.text,
+              }}
+            >
+              {deleteTitle || "DELETE ITEM?"}
+            </ThemedText>
+
+            <ThemedText
+              style={{
+                marginTop: 8,
+                fontSize: 13 * fontScale,
+                color: colors.icon,
+                lineHeight: 18 * fontScale,
+              }}
+              numberOfLines={3}
+            >
+              {deleteSubtitle || "This will permanently delete the item."}
+            </ThemedText>
+
+            <View style={styles.modalButtons}>
+              <Pressable
+                onPress={closeDeleteConfirm}
+                style={[
+                  styles.modalBtn,
+                  {
+                    borderColor: colors.border,
+                    backgroundColor: colors.inputBackground,
+                  },
+                ]}
+              >
+                <ThemedText
+                  style={{
+                    fontSize: 13 * fontScale,
+                    fontWeight: "700",
+                    color: colors.text,
+                  }}
+                >
+                  CANCEL
+                </ThemedText>
+              </Pressable>
+
+              <Pressable
+                onPress={confirmDelete}
+                disabled={!deleteTargetId}
+                style={[
+                  styles.modalBtn,
+                  {
+                    backgroundColor: colors.error,
+                    borderColor: colors.error,
+                    opacity: !deleteTargetId ? 0.6 : 1,
+                  },
+                ]}
+              >
+                <ThemedText
+                  style={{
+                    fontSize: 13 * fontScale,
+                    fontWeight: "800",
+                    color: colors.buttonText,
+                  }}
+                >
+                  DELETE
+                </ThemedText>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -1123,5 +1297,38 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     gap: 16,
     marginTop: 12,
+  },
+
+  // MODAL
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+
+  modalCenter: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+
+  modalCard: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+  },
+
+  modalButtons: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 16,
+  },
+
+  modalBtn: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

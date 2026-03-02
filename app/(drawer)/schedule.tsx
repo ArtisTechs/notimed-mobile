@@ -6,6 +6,7 @@ import FullscreenLoader from "@/components/FullscreenLoader";
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
+import { rescheduleCurrentUserNotifications } from "@/services/alarmScheduler";
 import { authApi, UserDetailsResponse } from "@/services/authApi";
 import {
   MedicationResponse,
@@ -17,7 +18,13 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Picker } from "@react-native-picker/picker";
 import React, { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View
+} from "react-native";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -262,6 +269,7 @@ export default function ScheduleScreen() {
         );
 
       setMedications(ui);
+      await rescheduleCurrentUserNotifications();
     } catch {
       // keep existing list
     } finally {
@@ -277,6 +285,21 @@ export default function ScheduleScreen() {
   const [editingMed, setEditingMed] = React.useState<MedicationPayload | null>(
     null,
   );
+
+  // DELETE CONFIRM MODAL
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
+  const [deleteTarget, setDeleteTarget] =
+    React.useState<MedicationPayload | null>(null);
+
+  const openDeleteConfirm = React.useCallback((m: MedicationPayload) => {
+    setDeleteTarget(m);
+    setDeleteConfirmOpen(true);
+  }, []);
+
+  const closeDeleteConfirm = React.useCallback(() => {
+    setDeleteConfirmOpen(false);
+    setDeleteTarget(null);
+  }, []);
 
   const toApiStatus = (s: MedicationPayload["status"]): MedicationStatus =>
     s === "completed" ? "COMPLETED" : "ONGOING";
@@ -372,6 +395,7 @@ export default function ScheduleScreen() {
         ),
       ),
     );
+    await rescheduleCurrentUserNotifications();
   };
 
   const handleUpdateMedication = async (payload: MedicationPayload) => {
@@ -392,6 +416,7 @@ export default function ScheduleScreen() {
           ),
         ),
     );
+    await rescheduleCurrentUserNotifications();
   };
 
   const handleDeleteMedication = async (id: string) => {
@@ -401,8 +426,15 @@ export default function ScheduleScreen() {
       await medicationsApi.delete(targetUserId, id);
     } finally {
       setMedications((prev) => prev.filter((m) => m.id !== id));
+      await rescheduleCurrentUserNotifications();
     }
   };
+
+  const confirmDelete = React.useCallback(async () => {
+    if (!deleteTarget) return;
+    await handleDeleteMedication(deleteTarget.id);
+    closeDeleteConfirm();
+  }, [deleteTarget, closeDeleteConfirm]);
 
   // ==========================
   // CALENDAR DOTS + FILTERED LIST
@@ -748,7 +780,7 @@ export default function ScheduleScreen() {
 
                     <Pressable
                       style={styles.tdDel}
-                      onPress={() => handleDeleteMedication(m.id)}
+                      onPress={() => openDeleteConfirm(m)}
                       hitSlop={10}
                     >
                       <Ionicons
@@ -785,6 +817,110 @@ export default function ScheduleScreen() {
           </ScrollView>
         </View>
       </ScrollView>
+
+      {/* DELETE CONFIRM MODAL */}
+      <Modal
+        transparent
+        visible={deleteConfirmOpen}
+        animationType="fade"
+        onRequestClose={closeDeleteConfirm}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={closeDeleteConfirm} />
+
+        <View style={styles.modalCenter}>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <ThemedText
+              style={{
+                fontSize: 16 * fontScale,
+                fontWeight: "800",
+                color: colors.text,
+              }}
+            >
+              DELETE MEDICATION?
+            </ThemedText>
+
+            <ThemedText
+              style={{
+                marginTop: 8,
+                fontSize: 13 * fontScale,
+                color: colors.icon,
+                lineHeight: 18 * fontScale,
+              }}
+              numberOfLines={3}
+            >
+              {deleteTarget
+                ? `This will permanently delete "${deleteTarget.name}".`
+                : "This will permanently delete the medication."}
+            </ThemedText>
+
+            {deleteTarget?.schedule?.time ? (
+              <ThemedText
+                style={{
+                  marginTop: 6,
+                  fontSize: 12 * fontScale,
+                  color: colors.icon,
+                }}
+              >
+                {deleteTarget.startDate} •{" "}
+                {formatTime12h(deleteTarget.schedule.time)}
+              </ThemedText>
+            ) : null}
+
+            <View style={styles.modalButtons}>
+              <Pressable
+                onPress={closeDeleteConfirm}
+                disabled={refetchingMeds}
+                style={[
+                  styles.modalBtn,
+                  {
+                    borderColor: colors.border,
+                    backgroundColor: colors.inputBackground,
+                    opacity: refetchingMeds ? 0.6 : 1,
+                  },
+                ]}
+              >
+                <ThemedText
+                  style={{
+                    fontSize: 13 * fontScale,
+                    fontWeight: "700",
+                    color: colors.text,
+                  }}
+                >
+                  CANCEL
+                </ThemedText>
+              </Pressable>
+
+              <Pressable
+                onPress={confirmDelete}
+                disabled={!deleteTarget}
+                style={[
+                  styles.modalBtn,
+                  {
+                    backgroundColor: colors.error,
+                    borderColor: colors.error,
+                    opacity: !deleteTarget ? 0.6 : 1,
+                  },
+                ]}
+              >
+                <ThemedText
+                  style={{
+                    fontSize: 13 * fontScale,
+                    fontWeight: "800",
+                    color: colors.buttonText,
+                  }}
+                >
+                  DELETE
+                </ThemedText>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -905,4 +1041,37 @@ const styles = StyleSheet.create({
   tdMedicine: { width: 180 },
   tdDose: { width: 120 },
   tdNotes: { width: 200 },
+
+  // MODAL
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+
+  modalCenter: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+
+  modalCard: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+  },
+
+  modalButtons: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 16,
+  },
+
+  modalBtn: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });

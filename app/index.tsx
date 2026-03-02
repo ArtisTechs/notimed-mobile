@@ -2,7 +2,7 @@ import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
 import { useAppView } from "@/context/AppViewContext";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { router, useSegments } from "expo-router";
+import { router, usePathname } from "expo-router";
 import { useEffect } from "react";
 import { ActivityIndicator, Image, View } from "react-native";
 
@@ -10,13 +10,12 @@ export default function Index() {
   const { setView } = useAppView();
   const { resolvedScheme } = useAppTheme();
   const colors = Colors[resolvedScheme];
-  const segments = useSegments();
+  const pathname = usePathname();
 
   useEffect(() => {
     const bootstrap = async () => {
       // If app is currently on reminder, do not redirect.
-      // segments example: ["reminder"] or ["(drawer)", "dashboard-patient-view"]
-      if (segments?.[0] === "reminder") return;
+      if (pathname === "/reminder") return;
 
       const role = await AsyncStorage.getItem("userRole");
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -33,7 +32,7 @@ export default function Index() {
     };
 
     bootstrap();
-  }, [segments, setView]);
+  }, [pathname, setView]);
 
   return (
     <View

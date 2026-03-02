@@ -1,3 +1,4 @@
+// src/services/notificationTapRouting.ts
 import * as Notifications from "expo-notifications";
 import { router } from "expo-router";
 
@@ -7,15 +8,19 @@ export function registerNotificationTapRouting() {
 
     if (data?.kind === "MEDICATION") {
       router.push({
-        pathname: "/reminder",
+        pathname: "/(drawer)/reminder",
         params: {
           kind: "MEDICATION",
+          userId: data.userId,
           medId: data.medId,
           name: data.name,
           dose: data.dose,
           notes: data.notes ?? "",
           date: data.date,
           time: data.time,
+          isReAlarm: String(Boolean(data.isReAlarm)),
+          reminderOffsetMinutes: String(data.reminderOffsetMinutes ?? ""),
+          reAlarmAfterMinutes: String(data.reAlarmAfterMinutes ?? ""),
         },
       });
       return;
@@ -23,9 +28,10 @@ export function registerNotificationTapRouting() {
 
     if (data?.kind === "APPOINTMENT") {
       router.push({
-        pathname: "/reminder",
+        pathname: "/(drawer)/reminder",
         params: {
           kind: "APPOINTMENT",
+          userId: data.userId,
           apptId: data.apptId,
           title: data.title,
           notes: data.notes ?? "",

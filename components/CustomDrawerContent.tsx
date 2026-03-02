@@ -1,6 +1,7 @@
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
 import { useAppView } from "@/context/AppViewContext";
+import { clearScheduledNotifications } from "@/services/alarmScheduler";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DrawerContentScrollView } from "@react-navigation/drawer";
@@ -251,7 +252,9 @@ export default function CustomDrawerContent(props: any) {
           alignItems: "center",
         }}
         onPress={async () => {
-          await AsyncStorage.removeItem("userRole");
+          await clearScheduledNotifications();
+          await AsyncStorage.clear();
+          setUserRole("patient");
           setView(null);
           router.replace("/(auth)/get-started");
         }}

@@ -1,3 +1,4 @@
+// app/(drawer)/reminder.tsx
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import React from "react";
@@ -11,16 +12,26 @@ import { useAppTheme } from "@/context/AppThemeContext";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import * as Speech from "expo-speech";
 
+import { historyApi, HistoryStatus, HistoryType } from "@/services/historyApi";
+
 type Params = {
   kind?: "MEDICATION" | "APPOINTMENT";
+  userId?: string;
+
   medId?: string;
   apptId?: string;
+
   name?: string;
   dose?: string;
+
   title?: string;
   notes?: string;
-  date?: string;
-  time?: string;
+
+  date?: string; // prefer YYYY-MM-DD
+  time?: string; // HH:mm
+
+  // ADD THIS: reminder offset in minutes (e.g. 10)
+  reminderOffsetMinutes?: string; // expo-router params are strings
 };
 
 const formatTime12h = (value?: string) => {
@@ -35,21 +46,36 @@ const formatTime12h = (value?: string) => {
   return `${h12}:${mm} ${period}`;
 };
 
+const toIsoDate = (value?: string) => {
+  if (!value) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 export default function ReminderScreen() {
-  const { resolvedScheme } = useAppTheme();
+  const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
 
   const params = useLocalSearchParams<Params>();
-  const kind = (params.kind ?? "MEDICATION") as "MEDICATION" | "APPOINTMENT";
+  const kind = (params.kind ?? "MEDICATION") as HistoryType;
 
-  // In-app alarm audio source (bundled asset)
-  // Make sure these files exist:
+  const offsetMinutes = React.useMemo(() => {
+    const n = Number(params.reminderOffsetMinutes);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [params.reminderOffsetMinutes]);
+
   const alarmSource =
     kind === "MEDICATION"
       ? require("../../assets/sounds/medication.wav")
       : require("../../assets/sounds/appointment.wav");
 
-  // Create managed audio player (no `new AudioPlayer(...)`)
   const player = useAudioPlayer(alarmSource, { updateInterval: 500 });
   const status = useAudioPlayerStatus(player);
 
@@ -66,54 +92,203 @@ export default function ReminderScreen() {
       ? `Time to take your medicine. ${params.name ?? ""}. ${params.dose ?? ""}.`
       : `Appointment reminder. ${params.title ?? ""}.`;
 
-  const stopAllAudio = React.useCallback(() => {
+  const speakingRef = React.useRef(false);
+  const stopRef = React.useRef(false);
+  const [saving, setSaving] = React.useState(false);
+
+  // timers for auto-stop/re-alarm
+  const stopTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const restartTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const cycleRunningRef = React.useRef(false);
+
+  const clearTimers = React.useCallback(() => {
+    if (stopTimerRef.current) {
+      clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = null;
+    }
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+  }, []);
+
+  const stopAlarmOnly = React.useCallback(() => {
+    stopRef.current = true;
+    speakingRef.current = false;
     Speech.stop();
     try {
       player.pause();
-      // if your expo-audio version supports this:
-      // player.seekTo(0);
     } catch {}
   }, [player]);
 
-  React.useEffect(() => {
-    // start TTS immediately
-    Speech.stop();
-    Speech.speak(spokenText, { language: "en", rate: 0.95, pitch: 1.0 });
+  const startSpeakingLoop = React.useCallback(() => {
+    if (speakingRef.current) return;
 
-    // configure looping + play once loaded
+    speakingRef.current = true;
+    stopRef.current = false;
+
+    const speakOnce = () => {
+      if (stopRef.current) {
+        speakingRef.current = false;
+        return;
+      }
+
+      Speech.speak(spokenText, {
+        language: "en",
+        rate: 0.95,
+        pitch: 1.0,
+        onDone: () => {
+          setTimeout(() => {
+            speakOnce();
+          }, 700);
+        },
+        onStopped: () => {
+          speakingRef.current = false;
+        },
+        onError: () => {
+          speakingRef.current = false;
+        },
+      });
+    };
+
+    Speech.stop();
+    speakOnce();
+  }, [spokenText]);
+
+  const startAlarmOnly = React.useCallback(() => {
+    stopRef.current = false;
+
+    // voice loop
+    startSpeakingLoop();
+
+    // sound loop
     try {
-      // loop property exists on AudioPlayer (runtime object)
       (player as any).loop = true;
     } catch {}
 
-    return () => {
-      stopAllAudio();
+    try {
+      player.play();
+    } catch {}
+  }, [player, startSpeakingLoop]);
+
+  // 3 min ring, then stop. re-alarm after offsetMinutes from the original ring start time.
+  const startAlarmCycle = React.useCallback(() => {
+    if (cycleRunningRef.current) return;
+    cycleRunningRef.current = true;
+
+    const RING_MS = 3 * 60 * 1000;
+    const OFFSET_MS = offsetMinutes * 60 * 1000;
+
+    const runOnce = () => {
+      if (!cycleRunningRef.current) return;
+
+      startAlarmOnly();
+
+      // stop at +3min
+      stopTimerRef.current = setTimeout(() => {
+        stopAlarmOnly();
+
+        // no re-alarm configured
+        if (OFFSET_MS <= 0) return;
+
+        // re-alarm at +offsetMinutes (e.g. 10 min) -> wait offset - 3
+        const waitMs = Math.max(0, OFFSET_MS - RING_MS);
+        restartTimerRef.current = setTimeout(() => {
+          runOnce();
+        }, waitMs);
+      }, RING_MS);
     };
-  }, [spokenText, player, stopAllAudio]);
+
+    clearTimers();
+    runOnce();
+  }, [offsetMinutes, startAlarmOnly, stopAlarmOnly, clearTimers]);
+
+  const stopAllAudio = React.useCallback(() => {
+    cycleRunningRef.current = false;
+    clearTimers();
+    stopAlarmOnly();
+  }, [clearTimers, stopAlarmOnly]);
 
   React.useEffect(() => {
-    // Play when the asset is done loading (best-effort)
-    // expo-audio status includes loading info; avoid playing too early.
+    // start cycle immediately when screen opens
+    startAlarmCycle();
+    return () => stopAllAudio();
+  }, [startAlarmCycle, stopAllAudio]);
+
+  React.useEffect(() => {
+    // keep sound alive if loaded but not playing (during active ring window)
     if ((status as any)?.isLoaded === false) return;
     if ((status as any)?.loading === true) return;
+
+    if (!cycleRunningRef.current) return;
+    if (stopRef.current) return;
 
     try {
       if (!(status as any)?.playing) player.play();
     } catch {}
   }, [status, player]);
 
-  const handleTaken = () => {
+  const postHistory = React.useCallback(
+    async (status: HistoryStatus) => {
+      const userId = params.userId ?? "";
+      const dateIso = toIsoDate(params.date);
+      const time = params.time ?? null;
+
+      if (!userId || !dateIso) return;
+
+      await historyApi.create({
+        userId,
+        name:
+          kind === "MEDICATION"
+            ? (params.name ?? "Medicine")
+            : (params.title ?? "Appointment"),
+        type: kind,
+        dose: kind === "MEDICATION" ? (params.dose ?? null) : null,
+        date: dateIso,
+        time,
+        status,
+        notes: params.notes ?? null,
+      });
+    },
+    [
+      params.userId,
+      params.date,
+      params.time,
+      params.name,
+      params.title,
+      params.dose,
+      params.notes,
+      kind,
+    ],
+  );
+
+  const handleTaken = async () => {
+    if (saving) return;
+    setSaving(true);
     stopAllAudio();
+    try {
+      await postHistory("COMPLETED");
+    } catch {}
+    setSaving(false);
     router.back();
   };
 
-  const handleSkipped = () => {
+  const handleSkipped = async () => {
+    if (saving) return;
+    setSaving(true);
     stopAllAudio();
+    try {
+      await postHistory("SKIPPED");
+    } catch {}
+    setSaving(false);
     router.back();
   };
 
   return (
     <SafeAreaView
+      edges={["top", "bottom"]}
       style={[styles.container, { backgroundColor: colors.background }]}
     >
       <View
@@ -122,8 +297,8 @@ export default function ReminderScreen() {
           {
             backgroundColor:
               resolvedScheme === "dark"
-                ? "rgba(59,130,246,0.2)"
-                : "rgba(59,130,246,0.15)",
+                ? "rgba(59,130,246,0.22)"
+                : "rgba(59,130,246,0.14)",
           },
         ]}
       >
@@ -131,7 +306,19 @@ export default function ReminderScreen() {
           <Ionicons name="alarm" size={42} color="#fff" />
         </View>
 
-        <ThemedText style={[styles.time, { color: colors.text }]}>
+        <ThemedText
+          style={[
+            styles.time,
+            {
+              color: colors.text,
+              fontSize: 52 * fontScale,
+              lineHeight: Math.ceil(62 * fontScale),
+            },
+          ]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.8}
+        >
           {formatTime12h(params.time)}
         </ThemedText>
 
@@ -151,16 +338,26 @@ export default function ReminderScreen() {
 
         <View style={styles.buttonRow}>
           <Pressable
-            style={[styles.button, styles.takenButton]}
+            style={[
+              styles.button,
+              styles.takenButton,
+              saving && styles.buttonDisabled,
+            ]}
             onPress={handleTaken}
+            disabled={saving}
           >
             <Ionicons name="checkmark" size={20} color="#fff" />
             <ThemedText style={styles.buttonText}>Taken</ThemedText>
           </Pressable>
 
           <Pressable
-            style={[styles.button, styles.skippedButton]}
+            style={[
+              styles.button,
+              styles.skippedButton,
+              saving && styles.buttonDisabled,
+            ]}
             onPress={handleSkipped}
+            disabled={saving}
           >
             <Ionicons name="close" size={20} color="#fff" />
             <ThemedText style={styles.buttonText}>Skipped</ThemedText>
@@ -182,12 +379,14 @@ export default function ReminderScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: "center", padding: 20 },
+  container: { flex: 1, padding: 20 },
   card: {
+    flex: 1,
     borderRadius: 28,
     paddingVertical: 40,
     paddingHorizontal: 24,
     alignItems: "center",
+    justifyContent: "center",
   },
   iconCircle: {
     width: 110,
@@ -197,7 +396,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 24,
   },
-  time: { fontSize: 52, fontWeight: "600" },
+  time: {
+    fontWeight: "600",
+    width: "100%",
+    textAlign: "center",
+    includeFontPadding: false,
+    textAlignVertical: "center",
+    paddingVertical: 2,
+  },
   date: { fontSize: 16, marginTop: 6, opacity: 0.85 },
   title: {
     marginTop: 30,
@@ -218,6 +424,7 @@ const styles = StyleSheet.create({
   takenButton: { backgroundColor: "#22C55E" },
   skippedButton: { backgroundColor: "#EF4444" },
   buttonText: { color: "#fff", fontWeight: "600" },
+  buttonDisabled: { opacity: 0.6 },
   stopRow: {
     marginTop: 18,
     flexDirection: "row",

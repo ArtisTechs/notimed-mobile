@@ -1,5 +1,8 @@
+// src/services/alarmScheduler.ts
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from "expo-notifications";
+import { appointmentsApi } from "@/services/appointmentsApi";
+import { medicationsApi } from "@/services/medicationsApi";
 
 const SCHEDULED_IDS_KEY = "scheduledNotificationIds:v1";
 
@@ -44,21 +47,54 @@ async function cancelPreviouslyScheduled() {
   await AsyncStorage.removeItem(SCHEDULED_IDS_KEY);
 }
 
+export async function clearScheduledNotifications() {
+  await cancelPreviouslyScheduled();
+}
+
+function shouldScheduleForPatientOnly(userRole?: string) {
+  // accept "PATIENT" or "patient"
+  return String(userRole ?? "").toLowerCase() === "patient";
+}
+
+function isOngoingMedication(status?: string) {
+  return String(status ?? "").toLowerCase() === "ongoing";
+}
+
+function getReAlarmAfterMinutes(m: any): number {
+  // backward compatible:
+  // - old field: reminderOffsetMinutes (previously treated as "before")
+  // - new semantics: reAlarmAfterMinutes (after the scheduled time)
+  const v =
+    m?.schedule?.reAlarmAfterMinutes ??
+    m?.schedule?.realarmAfterMinutes ??
+    m?.schedule?.reminderOffsetMinutes ??
+    0;
+
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+}
+
 export async function rescheduleAllFromCache(opts: {
   medications: any[];
   appointments: any[];
   horizonDays?: number;
+  userRole?: "PATIENT" | "CAREGIVER" | string;
 }) {
+  // HARD GATE: only patients get local scheduled notifications
+  if (!shouldScheduleForPatientOnly(opts.userRole)) {
+    await cancelPreviouslyScheduled();
+    return;
+  }
+
   const horizonDays = opts.horizonDays ?? 14;
   const now = new Date();
-  const start = now;
   const end = addDays(now, horizonDays);
 
   await cancelPreviouslyScheduled();
 
   const ids: string[] = [];
 
-  // Appointments
+  // Appointments (single fire at appointment time)
   for (const a of opts.appointments ?? []) {
     const dt = atLocalDateTime(a.appointmentDate, a.appointmentTime);
     if (dt.getTime() <= Date.now() + 1000) continue;
@@ -71,6 +107,7 @@ export async function rescheduleAllFromCache(opts: {
         sound: "appointment.wav",
         data: {
           kind: "APPOINTMENT",
+          userId: a.userId,
           apptId: a.id,
           title: a.title,
           notes: a.notes ?? "",
@@ -90,7 +127,7 @@ export async function rescheduleAllFromCache(opts: {
 
   // Medications (expand repeat rules)
   for (const m of opts.medications ?? []) {
-    if (m.status !== "ongoing") continue;
+    if (!isOngoingMedication(m.status)) continue;
 
     for (let i = 0; i <= horizonDays; i++) {
       const day = addDays(
@@ -138,38 +175,101 @@ export async function rescheduleAllFromCache(opts: {
       if (!matches) continue;
 
       const scheduledAt = atLocalDateTime(dayYmd, m.schedule.time);
-      const fireAt = new Date(
-        scheduledAt.getTime() - (m.schedule.reminderOffsetMinutes ?? 0) * 60000,
-      );
 
-      if (fireAt.getTime() <= Date.now() + 1000) continue;
-      if (fireAt.getTime() > end.getTime()) continue;
-
-      const id = await Notifications.scheduleNotificationAsync({
-        content: {
-          title: `Take ${m.name}`,
-          body: `${m.dose}${m.notes ? ` • ${m.notes}` : ""}`,
-          sound: "medication.wav",
-          data: {
-            kind: "MEDICATION",
-            medId: m.id,
-            name: m.name,
-            dose: m.dose,
-            notes: m.notes ?? "",
-            date: dayYmd,
-            time: m.schedule.time,
+      // 1) MAIN alarm at scheduled time
+      if (scheduledAt.getTime() > Date.now() + 1000 && scheduledAt <= end) {
+        const idMain = await Notifications.scheduleNotificationAsync({
+          content: {
+            title: `Take ${m.name}`,
+            body: `${m.dose}${m.notes ? ` • ${m.notes}` : ""}`,
+            sound: "medication.wav",
+            data: {
+              kind: "MEDICATION",
+              userId: m.userId,
+              medId: m.id,
+              name: m.name,
+              dose: m.dose,
+              notes: m.notes ?? "",
+              date: dayYmd,
+              time: m.schedule.time,
+              isReAlarm: false,
+              reminderOffsetMinutes: m.schedule?.reminderOffsetMinutes ?? 0,
+            },
           },
-        },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.DATE,
-          date: fireAt,
-          channelId: "medication",
-        },
-      });
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: scheduledAt,
+            channelId: "medication",
+          },
+        });
 
-      ids.push(id);
+        ids.push(idMain);
+      }
+
+      // 2) RE-ALARM after N minutes (NOT "remind before")
+      const reAlarmAfterMinutes = getReAlarmAfterMinutes(m);
+      if (reAlarmAfterMinutes > 0) {
+        const reAlarmAt = new Date(
+          scheduledAt.getTime() + reAlarmAfterMinutes * 60000,
+        );
+
+        if (reAlarmAt.getTime() <= Date.now() + 1000) continue;
+        if (reAlarmAt.getTime() > end.getTime()) continue;
+
+        const idRe = await Notifications.scheduleNotificationAsync({
+          content: {
+            title: `Take ${m.name} (Re-alarm)`,
+            body: `${m.dose}${m.notes ? ` • ${m.notes}` : ""}`,
+            sound: "medication.wav",
+            data: {
+              kind: "MEDICATION",
+              userId: m.userId,
+              medId: m.id,
+              name: m.name,
+              dose: m.dose,
+              notes: m.notes ?? "",
+              date: dayYmd,
+              time: m.schedule.time,
+              isReAlarm: true,
+              reminderOffsetMinutes: m.schedule?.reminderOffsetMinutes ?? 0,
+              reAlarmAfterMinutes,
+            },
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: reAlarmAt,
+            channelId: "medication",
+          },
+        });
+
+        ids.push(idRe);
+      }
     }
   }
 
   await AsyncStorage.setItem(SCHEDULED_IDS_KEY, JSON.stringify(ids));
+}
+
+export async function rescheduleCurrentUserNotifications(horizonDays = 14) {
+  const entries = await AsyncStorage.multiGet(["userId", "userRole"]);
+  const values = Object.fromEntries(entries);
+  const userId = values.userId ?? "";
+  const userRole = values.userRole ?? "";
+
+  if (!userId) {
+    await cancelPreviouslyScheduled();
+    return;
+  }
+
+  const [medications, appointments] = await Promise.all([
+    medicationsApi.getCached(userId),
+    appointmentsApi.getCached(userId),
+  ]);
+
+  await rescheduleAllFromCache({
+    medications,
+    appointments,
+    horizonDays,
+    userRole,
+  });
 }
