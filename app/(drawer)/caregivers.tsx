@@ -1,49 +1,204 @@
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
+import {
+  authApi,
+  ConnectedUserResponse,
+  UserDetailsResponse,
+} from "@/services/authApi";
 import { Ionicons } from "@expo/vector-icons";
-import React, { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 
-type Caregiver = {
+type CaregiverRow = {
   id: string;
   name: string;
   email: string;
+  status?: string;
 };
+
+function fullName(
+  u: Pick<ConnectedUserResponse, "firstName" | "middleName" | "lastName">,
+) {
+  return [u.firstName, u.middleName ?? "", u.lastName]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function getStoredUserId(): Promise<string | null> {
+  const keysToTry = ["userDetails", "user", "authUser", "currentUser"];
+  for (const key of keysToTry) {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw);
+      const id = parsed?.id ?? parsed?.user?.id ?? parsed?.data?.id;
+      if (typeof id === "string" && id.length > 0) return id;
+    } catch {}
+  }
+  return null;
+}
 
 export default function CaregiversScreen() {
   const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
 
+  const [me, setMe] = useState<UserDetailsResponse | null>(null);
   const [activeTab, setActiveTab] = useState<"connected" | "requests">(
     "connected",
   );
 
-  // MOCK DATA
-  const [connected, setConnected] = useState<Caregiver[]>([
-    { id: "1", name: "Maria Santos", email: "maria@email.com" },
-    { id: "2", name: "John Reyes", email: "john@email.com" },
-  ]);
+  const [connected, setConnected] = useState<CaregiverRow[]>([]);
+  const [requests, setRequests] = useState<CaregiverRow[]>([]);
 
-  const [requests, setRequests] = useState<Caregiver[]>([
-    { id: "3", name: "Angela Cruz", email: "angela@email.com" },
-    { id: "4", name: "David Lee", email: "david@email.com" },
-  ]);
+  const [loadingConnected, setLoadingConnected] = useState(true);
+  const [loadingRequests, setLoadingRequests] = useState(true);
 
-  const removeAccess = (id: string) => {
-    setConnected((prev) => prev.filter((c) => c.id !== id));
-  };
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
-  const approve = (caregiver: Caregiver) => {
-    setConnected((prev) => [...prev, caregiver]);
-    setRequests((prev) => prev.filter((c) => c.id !== caregiver.id));
-  };
+  const loadMeAndLists = useCallback(async () => {
+    const myId = await getStoredUserId();
+    if (!myId) {
+      setMe(null);
+      setConnected([]);
+      setRequests([]);
+      setLoadingConnected(false);
+      setLoadingRequests(false);
+      return;
+    }
 
-  const decline = (id: string) => {
-    setRequests((prev) => prev.filter((c) => c.id !== id));
-  };
+    // connected users come from user details
+    setLoadingConnected(true);
+    try {
+      const details = await authApi.getUserById(myId);
+      setMe(details);
+
+      const connectedRows: CaregiverRow[] = (details.connectedUsers ?? [])
+        .filter((u) => u.role === "CAREGIVER") // caregivers screen: show caregivers only
+        .map((u) => ({
+          id: u.id,
+          name: fullName(u),
+          email: u.email,
+          status: u.status,
+        }));
+
+      setConnected(connectedRows);
+    } finally {
+      setLoadingConnected(false);
+    }
+
+    // pending requests come from /connect/requests/{patientId}
+    setLoadingRequests(true);
+    try {
+      const pending = await authApi.getRequestedConnections(myId);
+      const requestRows: CaregiverRow[] = (pending ?? [])
+        .filter((u) => u.role === "CAREGIVER")
+        .map((u) => ({
+          id: u.id,
+          name: fullName(u),
+          email: u.email,
+          status: u.status,
+        }));
+
+      setRequests(requestRows);
+    } finally {
+      setLoadingRequests(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadMeAndLists();
+  }, [loadMeAndLists]);
+
+  const refresh = useCallback(async () => {
+    await loadMeAndLists();
+  }, [loadMeAndLists]);
+
+  const removeAccess = useCallback(
+    async (caregiverId: string) => {
+      if (!me) return;
+
+      setActionLoadingId(caregiverId);
+      try {
+        // this screen is for PATIENT managing CAREGIVERS
+        await authApi.disconnect({ patientId: me.id, caregiverId });
+        setConnected((prev) => prev.filter((c) => c.id !== caregiverId));
+      } finally {
+        setActionLoadingId(null);
+      }
+    },
+    [me],
+  );
+
+  const approve = useCallback(
+    async (caregiverId: string) => {
+      if (!me) return;
+
+      setActionLoadingId(caregiverId);
+      try {
+        await authApi.respondConnection({
+          patientId: me.id,
+          caregiverId,
+          action: "APPROVE",
+        });
+
+        // optimistic UI
+        const approved = requests.find((r) => r.id === caregiverId);
+        if (approved) setConnected((prev) => [...prev, approved]);
+        setRequests((prev) => prev.filter((r) => r.id !== caregiverId));
+      } finally {
+        setActionLoadingId(null);
+      }
+    },
+    [me, requests],
+  );
+
+  const decline = useCallback(
+    async (caregiverId: string) => {
+      if (!me) return;
+
+      setActionLoadingId(caregiverId);
+      try {
+        await authApi.respondConnection({
+          patientId: me.id,
+          caregiverId,
+          action: "REJECT",
+        });
+        setRequests((prev) => prev.filter((r) => r.id !== caregiverId));
+      } finally {
+        setActionLoadingId(null);
+      }
+    },
+    [me],
+  );
 
   const renderConnected = useMemo(() => {
+    if (loadingConnected) {
+      return (
+        <View style={styles.emptyState}>
+          <ActivityIndicator />
+          <ThemedText
+            style={{
+              marginTop: 10,
+              color: colors.icon,
+              fontSize: 13 * fontScale,
+            }}
+          >
+            LOADING...
+          </ThemedText>
+        </View>
+      );
+    }
+
     if (connected.length === 0) {
       return (
         <View style={styles.emptyState}>
@@ -61,50 +216,95 @@ export default function CaregiversScreen() {
       );
     }
 
-    return connected.map((item) => (
-      <View key={item.id} style={[styles.row, { borderColor: colors.border }]}>
+    return connected.map((item, idx) => (
+      <View
+        key={item.id}
+        style={[
+          styles.row,
+          {
+            borderColor: colors.border,
+            borderTopWidth: idx === 0 ? 0 : 1,
+            paddingTop: idx === 0 ? 0 : 14,
+          },
+        ]}
+      >
         <View style={styles.rowLeft}>
           <View style={[styles.dot, { backgroundColor: colors.tint }]} />
-          <View>
+          <View style={{ maxWidth: "78%" }}>
             <ThemedText
               style={{
                 fontSize: 15 * fontScale,
                 fontWeight: "600",
                 color: colors.text,
               }}
+              numberOfLines={1}
             >
               {item.name}
             </ThemedText>
             <ThemedText
-              style={{
-                fontSize: 12 * fontScale,
-                color: colors.icon,
-              }}
+              style={{ fontSize: 12 * fontScale, color: colors.icon }}
+              numberOfLines={1}
             >
               {item.email}
+              {item.status ? ` • ${String(item.status).toUpperCase()}` : ""}
             </ThemedText>
           </View>
         </View>
 
         <Pressable
           onPress={() => removeAccess(item.id)}
-          style={[styles.removeButton, { borderColor: colors.error }]}
+          disabled={actionLoadingId === item.id}
+          style={[
+            styles.removeButton,
+            {
+              borderColor: colors.error,
+              opacity: actionLoadingId === item.id ? 0.6 : 1,
+            },
+          ]}
         >
-          <ThemedText
-            style={{
-              color: colors.error,
-              fontSize: 12 * fontScale,
-              fontWeight: "600",
-            }}
-          >
-            REMOVE
-          </ThemedText>
+          {actionLoadingId === item.id ? (
+            <ActivityIndicator />
+          ) : (
+            <ThemedText
+              style={{
+                color: colors.error,
+                fontSize: 12 * fontScale,
+                fontWeight: "600",
+              }}
+            >
+              REMOVE
+            </ThemedText>
+          )}
         </Pressable>
       </View>
     ));
-  }, [connected, colors, fontScale]);
+  }, [
+    connected,
+    loadingConnected,
+    colors,
+    fontScale,
+    actionLoadingId,
+    removeAccess,
+  ]);
 
   const renderRequests = useMemo(() => {
+    if (loadingRequests) {
+      return (
+        <View style={styles.emptyState}>
+          <ActivityIndicator />
+          <ThemedText
+            style={{
+              marginTop: 10,
+              color: colors.icon,
+              fontSize: 13 * fontScale,
+            }}
+          >
+            LOADING...
+          </ThemedText>
+        </View>
+      );
+    }
+
     if (requests.length === 0) {
       return (
         <View style={styles.emptyState}>
@@ -122,52 +322,90 @@ export default function CaregiversScreen() {
       );
     }
 
-    return requests.map((item) => (
-      <View key={item.id} style={[styles.row, { borderColor: colors.border }]}>
+    return requests.map((item, idx) => (
+      <View
+        key={item.id}
+        style={[
+          styles.row,
+          {
+            borderColor: colors.border,
+            borderTopWidth: idx === 0 ? 0 : 1,
+            paddingTop: idx === 0 ? 0 : 14,
+          },
+        ]}
+      >
         <View style={styles.rowLeft}>
           <View style={[styles.dot, { backgroundColor: colors.tint }]} />
-          <View>
+          <View style={{ maxWidth: "64%" }}>
             <ThemedText
               style={{
                 fontSize: 15 * fontScale,
                 fontWeight: "600",
                 color: colors.text,
               }}
+              numberOfLines={1}
             >
               {item.name}
             </ThemedText>
             <ThemedText
-              style={{
-                fontSize: 12 * fontScale,
-                color: colors.icon,
-              }}
+              style={{ fontSize: 12 * fontScale, color: colors.icon }}
+              numberOfLines={1}
             >
               {item.email}
+              {item.status ? ` • ${String(item.status).toUpperCase()}` : ""}
             </ThemedText>
           </View>
         </View>
 
         <View style={{ flexDirection: "row", gap: 8 }}>
           <Pressable
-            onPress={() => approve(item)}
-            style={[styles.actionButton, { backgroundColor: colors.tint }]}
+            onPress={() => approve(item.id)}
+            disabled={actionLoadingId === item.id}
+            style={[
+              styles.actionButton,
+              {
+                backgroundColor: colors.tint,
+                opacity: actionLoadingId === item.id ? 0.6 : 1,
+              },
+            ]}
           >
-            <Ionicons name="checkmark" size={16} color={colors.buttonText} />
+            {actionLoadingId === item.id ? (
+              <ActivityIndicator />
+            ) : (
+              <Ionicons name="checkmark" size={16} color={colors.buttonText} />
+            )}
           </Pressable>
 
           <Pressable
             onPress={() => decline(item.id)}
+            disabled={actionLoadingId === item.id}
             style={[
               styles.actionButton,
-              { borderColor: colors.error, borderWidth: 1 },
+              {
+                borderColor: colors.error,
+                borderWidth: 1,
+                opacity: actionLoadingId === item.id ? 0.6 : 1,
+              },
             ]}
           >
-            <Ionicons name="close" size={16} color={colors.error} />
+            {actionLoadingId === item.id ? (
+              <ActivityIndicator />
+            ) : (
+              <Ionicons name="close" size={16} color={colors.error} />
+            )}
           </Pressable>
         </View>
       </View>
     ));
-  }, [requests, colors, fontScale]);
+  }, [
+    requests,
+    loadingRequests,
+    colors,
+    fontScale,
+    actionLoadingId,
+    approve,
+    decline,
+  ]);
 
   return (
     <ScrollView
@@ -175,8 +413,6 @@ export default function CaregiversScreen() {
       contentContainerStyle={{ padding: 20 }}
       showsVerticalScrollIndicator={false}
     >
-      {/* Header */}
-      {/* Header */}
       <View style={styles.headerRow}>
         <View>
           <ThemedText
@@ -202,26 +438,38 @@ export default function CaregiversScreen() {
         </View>
       </View>
 
-      {/* Card */}
+      <Pressable
+        style={[styles.refreshButton, { borderColor: colors.border }]}
+        onPress={refresh}
+        disabled={loadingConnected || loadingRequests}
+      >
+        <Ionicons name="refresh-outline" size={16} color={colors.icon} />
+        <ThemedText
+          style={{
+            marginLeft: 8,
+            color: colors.icon,
+            fontSize: 13 * fontScale,
+          }}
+        >
+          Refresh
+        </ThemedText>
+      </Pressable>
+
       <View
         style={[
           styles.card,
-          {
-            borderColor: colors.tint,
-            backgroundColor: colors.card,
-          },
+          { borderColor: colors.tint, backgroundColor: colors.card },
         ]}
       >
-        {/* Tabs */}
         <View
           style={[styles.tabRow, { backgroundColor: colors.inputBackground }]}
         >
-          {["connected", "requests"].map((tab) => {
+          {(["connected", "requests"] as const).map((tab) => {
             const isActive = activeTab === tab;
             return (
               <Pressable
                 key={tab}
-                onPress={() => setActiveTab(tab as "connected" | "requests")}
+                onPress={() => setActiveTab(tab)}
                 style={[
                   styles.tab,
                   isActive && { backgroundColor: colors.tint },
@@ -241,7 +489,6 @@ export default function CaregiversScreen() {
           })}
         </View>
 
-        {/* Content */}
         <View style={{ marginTop: 10 }}>
           {activeTab === "connected" ? renderConnected : renderRequests}
         </View>
@@ -253,8 +500,16 @@ export default function CaregiversScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
 
-  headerRow: {
-    marginBottom: 20,
+  headerRow: { marginBottom: 20 },
+
+  refreshButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 16,
   },
 
   card: {
@@ -282,7 +537,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingVertical: 14,
-    borderTopWidth: 1,
   },
 
   rowLeft: {
@@ -302,6 +556,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
+    minWidth: 84,
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   actionButton: {

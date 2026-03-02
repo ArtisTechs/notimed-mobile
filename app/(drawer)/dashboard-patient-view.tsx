@@ -7,6 +7,7 @@ import AddMedicationModal, {
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
+import { rescheduleAllFromCache } from "@/services/alarmScheduler";
 import {
   AppointmentResponse,
   appointmentsApi,
@@ -273,6 +274,11 @@ export default function PatientDashboard() {
     const uid = user.id || "unknown";
     return `medications:${uid}`;
   }, [user.id]);
+
+  React.useEffect(() => {
+    if (!user.id) return;
+    rescheduleAllFromCache({ medications, appointments, horizonDays: 14 });
+  }, [user.id, medications, appointments]);
 
   React.useEffect(() => {
     let mounted = true;

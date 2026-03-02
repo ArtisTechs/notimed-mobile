@@ -1,9 +1,34 @@
+// appointments.tsx (or AppointmentScreen.tsx)
+import AddAppointmentModal, {
+  AppointmentPayload,
+} from "@/components/AddAppointmentModal";
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
+import {
+  AppointmentResponse,
+  appointmentsApi,
+} from "@/services/appointmentsApi";
+import { authApi, UserDetailsResponse } from "@/services/authApi";
 import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const toYmd = (d: Date) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+const formatTime12h = (value?: string) => {
+  if (!value) return "—";
+  const [hStr, mStr = "00"] = value.split(":");
+  const hh = Number(hStr);
+  if (Number.isNaN(hh)) return value;
+
+  const period = hh >= 12 ? "PM" : "AM";
+  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+  return `${h12}:${mStr} ${period}`;
+};
 
 export default function AppointmentScreen() {
   const { resolvedScheme, fontScale } = useAppTheme();
@@ -51,267 +76,460 @@ export default function AppointmentScreen() {
     setSelectedDate(1);
   };
 
-  // MOCK APPOINTMENT DATA
-  const mockAppointments = [
-    {
-      id: "app-1",
-      date: new Date(year, monthIndex, 4),
-      time: "10:30",
-      title: "CT scan",
-      status: "Pending",
-    },
-    {
-      id: "app-2",
-      date: new Date(year, monthIndex, 4),
-      time: "02:00",
-      title: "Cardiology Checkup",
-      status: "Scheduled",
-    },
-  ];
+  // ==========================
+  // USER LOAD (same pattern as dashboard)
+  // ==========================
+  const [user, setUser] = React.useState<UserDetailsResponse>({
+    id: "",
+    firstName: "",
+    middleName: "",
+    lastName: "",
+    email: "",
+    role: "PATIENT",
+    inviteCode: "",
+    connectedUsers: [],
+  });
+
+  React.useEffect(() => {
+    let mounted = true;
+
+    const load = async () => {
+      try {
+        const cached = await AsyncStorage.getItem("userDetails");
+        if (cached && mounted) setUser(JSON.parse(cached));
+
+        const userId = await AsyncStorage.getItem("userId");
+        if (!userId) return;
+
+        const details = await authApi.getUserById(userId);
+
+        await AsyncStorage.multiSet([
+          ["userId", String(details.id)],
+          ["userRole", String(details.role).toLowerCase()],
+          ["userEmail", String(details.email ?? "")],
+          [
+            "userName",
+            `${details.firstName ?? ""} ${details.lastName ?? ""}`.trim(),
+          ],
+          ["userDetails", JSON.stringify(details)],
+        ]);
+
+        if (mounted) setUser(details);
+      } catch {
+        // keep cached
+      }
+    };
+
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // ==========================
+  // APPOINTMENTS (cache + API + CRUD)
+  // ==========================
+  const [appointments, setAppointments] = React.useState<AppointmentPayload[]>(
+    [],
+  );
+  const [apptModalOpen, setApptModalOpen] = React.useState(false);
+  const [editingAppt, setEditingAppt] =
+    React.useState<AppointmentPayload | null>(null);
+
+  const toUiAppointment = (a: AppointmentResponse): AppointmentPayload => ({
+    id: a.id,
+    userId: a.userId,
+    title: a.title,
+    appointmentDate: a.appointmentDate,
+    appointmentTime: a.appointmentTime,
+    notes: a.notes ?? undefined,
+  });
+
+  const apptsKey = React.useMemo(() => {
+    const uid = user.id || "unknown";
+    return `appointments:${uid}`;
+  }, [user.id]);
+
+  React.useEffect(() => {
+    let mounted = true;
+
+    const loadAppts = async () => {
+      if (!user.id) return;
+
+      // 1) cached
+      try {
+        const cached = await AsyncStorage.getItem(apptsKey);
+        if (mounted && cached) setAppointments(JSON.parse(cached));
+      } catch {}
+
+      // 2) API
+      try {
+        const list = await appointmentsApi.list(user.id);
+        const ui = list.map(toUiAppointment).sort((a, b) => {
+          const aKey = `${a.appointmentDate} ${a.appointmentTime}`;
+          const bKey = `${b.appointmentDate} ${b.appointmentTime}`;
+          return aKey.localeCompare(bKey);
+        });
+
+        if (!mounted) return;
+        setAppointments(ui);
+        await AsyncStorage.setItem(apptsKey, JSON.stringify(ui));
+      } catch {
+        // keep cached
+      }
+    };
+
+    loadAppts();
+    return () => {
+      mounted = false;
+    };
+  }, [user.id, apptsKey]);
+
+  const persistAppts = async (items: AppointmentPayload[]) => {
+    if (!user.id) return;
+    await AsyncStorage.setItem(apptsKey, JSON.stringify(items));
+  };
+
+  const handleAddAppointment = async (payload: AppointmentPayload) => {
+    if (!user.id) return;
+
+    const created = await appointmentsApi.create({
+      userId: user.id,
+      title: payload.title,
+      appointmentDate: payload.appointmentDate,
+      appointmentTime: payload.appointmentTime,
+      notes: payload.notes ?? null,
+    });
+
+    const createdUi = toUiAppointment(created);
+
+    const next = [createdUi, ...appointments].sort((a, b) => {
+      const aKey = `${a.appointmentDate} ${a.appointmentTime}`;
+      const bKey = `${b.appointmentDate} ${b.appointmentTime}`;
+      return aKey.localeCompare(bKey);
+    });
+
+    setAppointments(next);
+    await persistAppts(next);
+  };
+
+  const handleUpdateAppointment = async (payload: AppointmentPayload) => {
+    if (!user.id) return;
+
+    const updated = await appointmentsApi.update(payload.id, {
+      title: payload.title,
+      appointmentDate: payload.appointmentDate,
+      appointmentTime: payload.appointmentTime,
+      notes: payload.notes ?? null,
+    });
+
+    const updatedUi = toUiAppointment(updated);
+
+    const next = appointments
+      .map((a) => (a.id === updatedUi.id ? updatedUi : a))
+      .sort((a, b) => {
+        const aKey = `${a.appointmentDate} ${a.appointmentTime}`;
+        const bKey = `${b.appointmentDate} ${b.appointmentTime}`;
+        return aKey.localeCompare(bKey);
+      });
+
+    setAppointments(next);
+    await persistAppts(next);
+  };
+
+  const handleDeleteAppointment = async (id: string) => {
+    try {
+      await appointmentsApi.delete(id);
+    } finally {
+      const next = appointments.filter((a) => a.id !== id);
+      setAppointments(next);
+      await persistAppts(next);
+    }
+  };
+
+  // ==========================
+  // CALENDAR DOTS + FILTERED (by selected date)
+  // ==========================
+  const selectedYmd = useMemo(() => {
+    return toYmd(new Date(year, monthIndex, selectedDate));
+  }, [year, monthIndex, selectedDate]);
 
   const appointmentDays = useMemo(() => {
-    return new Set(
-      mockAppointments
-        .filter(
-          (item) =>
-            item.date.getFullYear() === year &&
-            item.date.getMonth() === monthIndex,
-        )
-        .map((item) => item.date.getDate()),
-    );
-  }, [mockAppointments, year, monthIndex]);
+    const set = new Set<number>();
 
-  const filteredAppointments = mockAppointments.filter(
-    (item) =>
-      item.date.getFullYear() === year &&
-      item.date.getMonth() === monthIndex &&
-      item.date.getDate() === selectedDate,
-  );
+    for (const a of appointments) {
+      // appointmentDate expected: YYYY-MM-DD
+      const d = new Date(`${a.appointmentDate}T00:00:00`);
+      if (d.getFullYear() === year && d.getMonth() === monthIndex) {
+        set.add(d.getDate());
+      }
+    }
+
+    return set;
+  }, [appointments, year, monthIndex]);
+
+  const filteredAppointments = useMemo(() => {
+    return appointments
+      .filter((a) => a.appointmentDate === selectedYmd)
+      .slice()
+      .sort((a, b) => a.appointmentTime.localeCompare(b.appointmentTime));
+  }, [appointments, selectedYmd]);
 
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={{ padding: 20 }}
-      showsVerticalScrollIndicator={false}
-    >
-      {/* Header */}
-      <View style={styles.headerRow}>
-        <View>
-          <ThemedText
-            style={{
-              fontSize: 20 * fontScale,
-              fontWeight: "700",
-              color: colors.text,
-            }}
-          >
-            APPOINTMENTS
-          </ThemedText>
-
-          <ThemedText
-            style={{
-              marginTop: 4,
-              fontSize: 13 * fontScale,
-              color: colors.icon,
-              letterSpacing: 0.5,
-            }}
-          >
-            Manage and track your medical visits
-          </ThemedText>
-        </View>
-
-        <Pressable style={[styles.addButton, { borderColor: colors.tint }]}>
-          <Ionicons name="add" size={18} color={colors.tint} />
-        </Pressable>
-      </View>
-
-      {/* Calendar */}
-      <View
-        style={[
-          styles.calendarCard,
-          {
-            borderColor: colors.tint,
-            backgroundColor: colors.card,
-          },
-        ]}
-      >
-        <View style={styles.monthRow}>
-          <Pressable onPress={() => changeMonth(-1)}>
-            <Ionicons name="chevron-back" size={18} color={colors.tint} />
-          </Pressable>
-
-          <ThemedText
-            numberOfLines={1}
-            ellipsizeMode="tail"
-            style={{
-              color: colors.tint,
-              fontWeight: "700",
-              fontSize: 16 * fontScale,
-              letterSpacing: 1,
-              flexShrink: 1,
-            }}
-          >
-            {monthLabel} {year}
-          </ThemedText>
-
-          <Pressable onPress={() => changeMonth(1)}>
-            <Ionicons name="chevron-forward" size={18} color={colors.tint} />
-          </Pressable>
-        </View>
-
-        <View
-          style={[styles.weekRow, { backgroundColor: colors.inputBackground }]}
-        >
-          {["SU", "MO", "TU", "WE", "TH", "FR", "SA"].map((day) => (
-            <ThemedText
-              key={day}
-              style={{
-                color: colors.text,
-                fontSize: 12 * fontScale,
-                fontWeight: "600",
-              }}
-            >
-              {day}
-            </ThemedText>
-          ))}
-        </View>
-
-        <View style={styles.daysGrid}>
-          {calendarDays.map((day, index) => {
-            const isSelected = selectedDate === day;
-
-            if (!day) return <View key={index} style={styles.dayCell} />;
-
-            return (
-              <Pressable
-                key={index}
-                onPress={() => setSelectedDate(day)}
-                style={[
-                  styles.dayCell,
-                  isSelected && { backgroundColor: colors.tint },
-                ]}
-              >
-                <ThemedText
-                  style={{
-                    color: isSelected ? colors.buttonText : colors.text,
-                    fontWeight: isSelected ? "700" : "500",
-                  }}
-                >
-                  {day}
-                </ThemedText>
-
-                {appointmentDays.has(day) && (
-                  <View
-                    style={[
-                      styles.dot,
-                      {
-                        backgroundColor: isSelected
-                          ? colors.buttonText
-                          : colors.tint,
-                      },
-                    ]}
-                  />
-                )}
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
-
-      {/* Header Label */}
-      <ThemedText
-        style={{
-          marginTop: 24,
-          marginBottom: 12,
-          fontWeight: "700",
-          fontSize: 14 * fontScale,
-          letterSpacing: 1,
-          color: colors.icon,
+    <>
+      <AddAppointmentModal
+        visible={apptModalOpen}
+        userId={user.id}
+        mode={editingAppt ? "update" : "add"}
+        initialData={editingAppt ?? undefined}
+        onClose={() => {
+          setApptModalOpen(false);
+          setEditingAppt(null);
         }}
-      >
-        APPOINTMENTS FOR {monthLabel} {selectedDate}, {year}
-      </ThemedText>
+        onSubmit={editingAppt ? handleUpdateAppointment : handleAddAppointment}
+      />
 
-      {/* Table */}
-      <View
-        style={[
-          styles.card,
-          {
-            backgroundColor: colors.card,
-            borderColor: colors.border,
-          },
-        ]}
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.background }]}
+        contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+        showsVerticalScrollIndicator={false}
       >
-        <View style={styles.tableHeader}>
-          <ThemedText style={[styles.thTime, { color: colors.icon }]}>
-            TIME
-          </ThemedText>
-          <ThemedText style={[styles.thTitle, { color: colors.icon }]}>
-            APPOINTMENT
-          </ThemedText>
-          <ThemedText style={[styles.thStatus, { color: colors.icon }]}>
-            STATUS
-          </ThemedText>
-        </View>
-
-        {filteredAppointments.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="calendar-outline" size={32} color={colors.icon} />
+        {/* Header */}
+        <View style={styles.headerRow}>
+          <View>
             <ThemedText
               style={{
-                marginTop: 8,
-                color: colors.icon,
-                fontSize: 13 * fontScale,
+                fontSize: 20 * fontScale,
+                fontWeight: "700",
+                color: colors.text,
               }}
             >
-              NO APPOINTMENTS
+              APPOINTMENTS
+            </ThemedText>
+
+            <ThemedText
+              style={{
+                marginTop: 4,
+                fontSize: 13 * fontScale,
+                color: colors.icon,
+                letterSpacing: 0.5,
+              }}
+            >
+              Manage and track your medical visits
             </ThemedText>
           </View>
-        ) : (
-          filteredAppointments.map((item) => (
-            <View
-              key={item.id}
-              style={[styles.tableRow, { borderColor: colors.border }]}
+
+          <Pressable
+            style={[styles.addButton, { borderColor: colors.tint }]}
+            onPress={() => {
+              setEditingAppt(null);
+              setApptModalOpen(true);
+            }}
+          >
+            <Ionicons name="add" size={18} color={colors.tint} />
+          </Pressable>
+        </View>
+
+        {/* Calendar */}
+        <View
+          style={[
+            styles.calendarCard,
+            { borderColor: colors.tint, backgroundColor: colors.card },
+          ]}
+        >
+          <View style={styles.monthRow}>
+            <Pressable onPress={() => changeMonth(-1)}>
+              <Ionicons name="chevron-back" size={18} color={colors.tint} />
+            </Pressable>
+
+            <ThemedText
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              style={{
+                color: colors.tint,
+                fontWeight: "700",
+                fontSize: 16 * fontScale,
+                letterSpacing: 1,
+                flexShrink: 1,
+              }}
             >
-              <ThemedText style={[styles.tdTime, { color: colors.text }]}>
-                {item.time}
+              {monthLabel} {year}
+            </ThemedText>
+
+            <Pressable onPress={() => changeMonth(1)}>
+              <Ionicons name="chevron-forward" size={18} color={colors.tint} />
+            </Pressable>
+          </View>
+
+          <View
+            style={[
+              styles.weekRow,
+              { backgroundColor: colors.inputBackground },
+            ]}
+          >
+            {["SU", "MO", "TU", "WE", "TH", "FR", "SA"].map((day) => (
+              <ThemedText
+                key={day}
+                style={{
+                  color: colors.text,
+                  fontSize: 12 * fontScale,
+                  fontWeight: "600",
+                }}
+              >
+                {day}
               </ThemedText>
+            ))}
+          </View>
 
-              <View style={styles.tdTitle}>
-                <ThemedText
-                  style={{
-                    color: colors.text,
-                    fontWeight: "600",
-                  }}
-                >
-                  {item.title}
-                </ThemedText>
-              </View>
+          <View style={styles.daysGrid}>
+            {calendarDays.map((day, index) => {
+              const isSelected = selectedDate === day;
 
-              <View style={styles.tdStatus}>
-                <View
+              if (!day) return <View key={index} style={styles.dayCell} />;
+
+              return (
+                <Pressable
+                  key={index}
+                  onPress={() => setSelectedDate(day)}
                   style={[
-                    styles.statusCircle,
-                    {
-                      borderColor:
-                        item.status === "Pending" ? "#f97316" : colors.tint,
-                    },
+                    styles.dayCell,
+                    isSelected && { backgroundColor: colors.tint },
                   ]}
-                />
-                <ThemedText
-                  style={{
-                    marginLeft: 6,
-                    fontWeight: "600",
-                    color: item.status === "Pending" ? "#f97316" : colors.tint,
-                  }}
                 >
-                  {item.status.toUpperCase()}
+                  <ThemedText
+                    style={{
+                      color: isSelected ? colors.buttonText : colors.text,
+                      fontWeight: isSelected ? "700" : "500",
+                    }}
+                  >
+                    {day}
+                  </ThemedText>
+
+                  {appointmentDays.has(day) && (
+                    <View
+                      style={[
+                        styles.dot,
+                        {
+                          backgroundColor: isSelected
+                            ? colors.buttonText
+                            : colors.tint,
+                        },
+                      ]}
+                    />
+                  )}
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        {/* Header Label */}
+        <ThemedText
+          style={{
+            marginTop: 24,
+            marginBottom: 12,
+            fontWeight: "700",
+            fontSize: 14 * fontScale,
+            letterSpacing: 1,
+            color: colors.icon,
+          }}
+        >
+          APPOINTMENTS FOR {monthLabel} {selectedDate}, {year}
+        </ThemedText>
+
+        {/* Table */}
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={styles.table}>
+              <View style={styles.tableHeader}>
+                <ThemedText style={[styles.thEdit, { color: colors.icon }]} />
+                <ThemedText style={[styles.thDel, { color: colors.icon }]} />
+                <ThemedText style={[styles.thTime, { color: colors.icon }]}>
+                  TIME
+                </ThemedText>
+                <ThemedText style={[styles.thTitle, { color: colors.icon }]}>
+                  APPOINTMENT
+                </ThemedText>
+                <ThemedText style={[styles.thNotes, { color: colors.icon }]}>
+                  NOTES
                 </ThemedText>
               </View>
+
+              {filteredAppointments.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Ionicons
+                    name="calendar-outline"
+                    size={32}
+                    color={colors.icon}
+                  />
+                  <ThemedText
+                    style={{
+                      marginTop: 8,
+                      color: colors.icon,
+                      fontSize: 13 * fontScale,
+                    }}
+                  >
+                    NO APPOINTMENTS
+                  </ThemedText>
+                </View>
+              ) : (
+                filteredAppointments.map((a) => (
+                  <View
+                    key={a.id}
+                    style={[styles.tableRow, { borderColor: colors.border }]}
+                  >
+                    <Pressable
+                      style={styles.tdEdit}
+                      onPress={() => {
+                        setEditingAppt(a);
+                        setApptModalOpen(true);
+                      }}
+                      hitSlop={10}
+                    >
+                      <Ionicons
+                        name="create-outline"
+                        size={18}
+                        color={colors.tint}
+                      />
+                    </Pressable>
+
+                    <Pressable
+                      style={styles.tdDel}
+                      onPress={() => handleDeleteAppointment(a.id)}
+                      hitSlop={10}
+                    >
+                      <Ionicons name="trash-outline" size={18} color="red" />
+                    </Pressable>
+
+                    <ThemedText style={[styles.tdTime, { color: colors.text }]}>
+                      {formatTime12h(a.appointmentTime)}
+                    </ThemedText>
+
+                    <ThemedText
+                      style={[styles.tdTitle, { color: colors.text }]}
+                      numberOfLines={1}
+                    >
+                      {a.title}
+                    </ThemedText>
+
+                    <ThemedText
+                      style={[styles.tdNotes, { color: colors.icon }]}
+                    >
+                      {a.notes || "—"}
+                    </ThemedText>
+                  </View>
+                ))
+              )}
             </View>
-          ))
-        )}
-      </View>
-    </ScrollView>
+          </ScrollView>
+        </View>
+      </ScrollView>
+    </>
   );
 }
 
@@ -381,6 +599,16 @@ const styles = StyleSheet.create({
     padding: 16,
   },
 
+  emptyState: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 30,
+  },
+
+  table: {
+    width: 600,
+  },
+
   tableHeader: {
     flexDirection: "row",
     marginBottom: 10,
@@ -393,29 +621,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  thTime: { width: 80, fontWeight: "700" },
-  thTitle: { flex: 1, fontWeight: "700" },
-  thStatus: { width: 100, fontWeight: "700", textAlign: "right" },
+  // HEADER WIDTHS
+  thEdit: { width: 50, fontWeight: "700" },
+  thDel: { width: 50, fontWeight: "700" },
+  thTime: { width: 120, fontWeight: "700" },
+  thTitle: { width: 220, fontWeight: "700" },
+  thNotes: { width: 250, fontWeight: "700" },
 
-  tdTime: { width: 80 },
-  tdTitle: { flex: 1 },
-  tdStatus: {
-    width: 120,
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    alignItems: "center",
-  },
-
-  statusCircle: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 2,
-  },
-
-  emptyState: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 30,
-  },
+  // DATA WIDTHS
+  tdEdit: { width: 50, alignItems: "center" },
+  tdDel: { width: 50, alignItems: "center" },
+  tdTime: { width: 120 },
+  tdTitle: { width: 220 },
+  tdNotes: { width: 250 },
 });

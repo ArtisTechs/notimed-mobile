@@ -20,7 +20,8 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.firefox20231.notiMedmobile"
+      "package": "com.firefox20231.notiMedmobile",
+      "permissions": ["SCHEDULE_EXACT_ALARM"]
     },
     "web": {
       "output": "static",
@@ -40,7 +41,17 @@
           }
         }
       ],
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "expo-audio",
+      [
+        "expo-notifications",
+        {
+          "sounds": [
+            "./assets/sounds/medication.wav",
+            "./assets/sounds/appointment.wav"
+          ]
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

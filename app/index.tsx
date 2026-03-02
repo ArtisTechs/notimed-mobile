@@ -2,7 +2,7 @@ import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
 import { useAppView } from "@/context/AppViewContext";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { router } from "expo-router";
+import { router, useSegments } from "expo-router";
 import { useEffect } from "react";
 import { ActivityIndicator, Image, View } from "react-native";
 
@@ -10,11 +10,15 @@ export default function Index() {
   const { setView } = useAppView();
   const { resolvedScheme } = useAppTheme();
   const colors = Colors[resolvedScheme];
+  const segments = useSegments();
 
   useEffect(() => {
     const bootstrap = async () => {
-      const role = await AsyncStorage.getItem("userRole");
+      // If app is currently on reminder, do not redirect.
+      // segments example: ["reminder"] or ["(drawer)", "dashboard-patient-view"]
+      if (segments?.[0] === "reminder") return;
 
+      const role = await AsyncStorage.getItem("userRole");
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
       if (role === "caregiver") {
@@ -29,7 +33,7 @@ export default function Index() {
     };
 
     bootstrap();
-  }, []);
+  }, [segments, setView]);
 
   return (
     <View
@@ -49,7 +53,6 @@ export default function Index() {
           marginBottom: 24,
         }}
       />
-
       <ActivityIndicator size="large" color={colors.tint} />
     </View>
   );
