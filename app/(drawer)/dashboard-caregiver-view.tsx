@@ -9,6 +9,10 @@ import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
 import {
+  HistoryResponse,
+  historyApi,
+} from "@/services/historyApi";
+import {
   AppointmentResponse,
   appointmentsApi,
 } from "@/services/appointmentsApi";
@@ -21,6 +25,7 @@ import {
 } from "@/services/medicationsApi";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Notifications from "expo-notifications";
 import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -152,6 +157,19 @@ const isMedicationDueOn = (m: MedicationPayload, dateIso: string) => {
   return false;
 };
 
+const formatHistoryDateTime = (item: HistoryResponse) => {
+  const datePart = item.date || "";
+  const timePart = item.time ? ` ${formatTime12h(item.time)}` : "";
+  return `${datePart}${timePart}`.trim();
+};
+
+const sortHistoryNewest = (items: HistoryResponse[]) =>
+  items.slice().sort((a, b) =>
+    String(b.updatedAt || b.createdAt).localeCompare(
+      String(a.updatedAt || a.createdAt),
+    ),
+  );
+
 export default function CaregiverDashboard() {
   const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
@@ -200,6 +218,8 @@ export default function CaregiverDashboard() {
     [],
   );
   const [medications, setMedications] = React.useState<MedicationPayload[]>([]);
+  const [historyItems, setHistoryItems] = React.useState<HistoryResponse[]>([]);
+  const seenHistoryIdsRef = React.useRef(new Map<string, Set<string>>());
 
   // modals + edit state
   const [apptModalOpen, setApptModalOpen] = React.useState(false);
@@ -294,6 +314,59 @@ export default function CaregiverDashboard() {
 
   const hasPatients = patients.length > 0;
 
+  const latestHistory = React.useMemo(() => {
+    return sortHistoryNewest(historyItems).slice(0, 5);
+  }, [historyItems]);
+
+  const notifyHistoryUpdate = React.useCallback(
+    async (newItems: HistoryResponse[]) => {
+      if (!selectedPatientId || !newItems.length) return;
+
+      const patientLabel =
+        selectedPatientName && selectedPatientName !== "Select patient"
+          ? selectedPatientName
+          : "Your patient";
+
+      const latestItem = sortHistoryNewest(newItems)[0];
+      const statusVerb =
+        latestItem.status === "COMPLETED"
+          ? "completed"
+          : latestItem.status === "SKIPPED"
+            ? "skipped"
+            : "missed";
+      const subject =
+        latestItem.type === "MEDICATION"
+          ? `medication ${latestItem.name}`
+          : `appointment ${latestItem.name}`;
+
+      const body =
+        newItems.length === 1
+          ? `${patientLabel} ${statusVerb} ${subject}${
+              latestItem.time ? ` at ${formatTime12h(latestItem.time)}` : ""
+            }.`
+          : `${patientLabel} has ${newItems.length} new history updates.`;
+
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: `${patientLabel} update`,
+            body,
+            sound: "appointment.wav",
+            data: {
+              kind: "CAREGIVER_HISTORY",
+              patientId: selectedPatientId,
+              historyIds: newItems.map((item) => item.id),
+            },
+          },
+          trigger: {
+            channelId: "appointment",
+          },
+        });
+      } catch {}
+    },
+    [selectedPatientId, selectedPatientName],
+  );
+
   const fetchCaregiver = React.useCallback(async () => {
     const userId = await AsyncStorage.getItem("userId");
     if (!userId) return;
@@ -347,6 +420,40 @@ export default function CaregiverDashboard() {
     setMedications(medUi);
   }, [selectedPatientId]);
 
+  const fetchSelectedPatientHistory = React.useCallback(
+    async (opts?: { notifyOnNew?: boolean }) => {
+      if (!selectedPatientId) {
+        setHistoryItems([]);
+        return;
+      }
+
+      const res = await historyApi.list({ userId: selectedPatientId });
+      const sorted = sortHistoryNewest(res);
+      setHistoryItems(sorted);
+
+      const seenIds =
+        seenHistoryIdsRef.current.get(selectedPatientId) ?? new Set<string>();
+      const newItems = sorted.filter((item) => !seenIds.has(item.id));
+      const completedNewItems = newItems.filter(
+        (item) => item.status === "COMPLETED",
+      );
+
+      seenHistoryIdsRef.current.set(
+        selectedPatientId,
+        new Set(sorted.map((item) => item.id)),
+      );
+
+      if (
+        opts?.notifyOnNew &&
+        seenIds.size > 0 &&
+        completedNewItems.length > 0
+      ) {
+        await notifyHistoryUpdate(completedNewItems);
+      }
+    },
+    [selectedPatientId, notifyHistoryUpdate],
+  );
+
   React.useEffect(() => {
     const init = async () => {
       try {
@@ -360,10 +467,21 @@ export default function CaregiverDashboard() {
     const run = async () => {
       try {
         await fetchSelectedPatientData();
+        await fetchSelectedPatientHistory();
       } catch {}
     };
     run();
-  }, [fetchSelectedPatientData]);
+  }, [fetchSelectedPatientData, fetchSelectedPatientHistory]);
+
+  React.useEffect(() => {
+    if (!selectedPatientId) return;
+
+    const intervalId = setInterval(() => {
+      fetchSelectedPatientHistory({ notifyOnNew: true }).catch(() => {});
+    }, 30000);
+
+    return () => clearInterval(intervalId);
+  }, [selectedPatientId, fetchSelectedPatientHistory]);
 
   const todayIso = React.useMemo(() => toISODateLocal(new Date()), []);
 
@@ -392,10 +510,11 @@ export default function CaregiverDashboard() {
     try {
       await fetchCaregiver();
       await fetchSelectedPatientData();
+      await fetchSelectedPatientHistory();
     } finally {
       setRefreshing(false);
     }
-  }, [fetchCaregiver, fetchSelectedPatientData]);
+  }, [fetchCaregiver, fetchSelectedPatientData, fetchSelectedPatientHistory]);
 
   const handleAddAppointment = async (payload: AppointmentPayload) => {
     if (!selectedPatientId) return;
@@ -1188,6 +1307,127 @@ export default function CaregiverDashboard() {
             </View>
 
             {/* INVITE CODE */}
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <ThemedText
+                  style={{
+                    fontWeight: "700",
+                    fontSize: 18 * fontScale,
+                    color: colors.text,
+                  }}
+                >
+                  Recent History
+                </ThemedText>
+              </View>
+
+              {latestHistory.length ? (
+                latestHistory.map((item) => (
+                  <View
+                    key={item.id}
+                    style={[
+                      styles.dataCard,
+                      {
+                        backgroundColor: colors.card,
+                        borderColor: colors.border,
+                      },
+                    ]}
+                  >
+                    <View style={styles.cardTopRow}>
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 8,
+                          flex: 1,
+                        }}
+                      >
+                        <Ionicons
+                          name={
+                            item.type === "MEDICATION"
+                              ? "checkmark-done-outline"
+                              : "clipboard-outline"
+                          }
+                          size={20}
+                          color={colors.tint}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <ThemedText
+                            style={{
+                              color: colors.text,
+                              fontWeight: "700",
+                              fontSize: 16 * fontScale,
+                            }}
+                            numberOfLines={1}
+                          >
+                            {item.name}
+                          </ThemedText>
+                          <ThemedText
+                            style={{
+                              color: colors.icon,
+                              fontSize: 13 * fontScale,
+                            }}
+                          >
+                            {item.type === "MEDICATION"
+                              ? "Medication"
+                              : "Appointment"}
+                          </ThemedText>
+                        </View>
+                      </View>
+
+                      <View
+                        style={[
+                          styles.historyStatusBadge,
+                          {
+                            backgroundColor:
+                              item.status === "COMPLETED"
+                                ? "rgba(34,197,94,0.16)"
+                                : "rgba(239,68,68,0.16)",
+                          },
+                        ]}
+                      >
+                        <ThemedText
+                          style={{
+                            color:
+                              item.status === "COMPLETED"
+                                ? colors.success
+                                : colors.error,
+                            fontSize: 12 * fontScale,
+                            fontWeight: "700",
+                          }}
+                        >
+                          {item.status}
+                        </ThemedText>
+                      </View>
+                    </View>
+
+                    <ThemedText style={{ color: colors.icon, marginTop: 8 }}>
+                      {formatHistoryDateTime(item)}
+                    </ThemedText>
+
+                    {!!item.notes && (
+                      <ThemedText style={{ color: colors.icon, marginTop: 4 }}>
+                        {item.notes}
+                      </ThemedText>
+                    )}
+                  </View>
+                ))
+              ) : (
+                <View
+                  style={[
+                    styles.emptyCard,
+                    {
+                      borderColor: colors.border,
+                      backgroundColor: colors.inputBackground,
+                    },
+                  ]}
+                >
+                  <ThemedText style={{ color: colors.icon }}>
+                    No history entries yet for this patient.
+                  </ThemedText>
+                </View>
+              )}
+            </View>
+
             <View style={[styles.inviteBox, { borderColor: colors.border }]}>
               <ThemedText
                 style={{
@@ -1298,6 +1538,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 20,
+  },
+
+  historyStatusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
   },
 
   cardActions: {

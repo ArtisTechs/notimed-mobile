@@ -28,7 +28,7 @@ export const Colors = {
     buttonText: "#ECEDEE",
     background: "#000717",
     card: "#060e21",
-    border: "#060e21",
+    border: "#555872",
     inputBackground: "#060e21",
     tint: tintColorDark,
     icon: "#9BA1A6",

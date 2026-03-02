@@ -25,8 +25,10 @@ import {
 } from "@/services/medicationsApi";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Clipboard from "expo-clipboard";
 import React from "react";
 import {
+  Alert,
   Modal,
   Pressable,
   RefreshControl,
@@ -168,6 +170,22 @@ export default function PatientDashboard() {
   });
 
   const fullName = `${user.firstName} ${user.middleName || ""} ${user.lastName}`;
+
+  const handleCopyInviteCode = React.useCallback(async () => {
+    const code = user.inviteCode?.trim();
+
+    if (!code) {
+      Alert.alert("No invite code", "Invite code is not available yet.");
+      return;
+    }
+
+    try {
+      await Clipboard.setStringAsync(code);
+      Alert.alert("Copied", "Invite code copied to clipboard.");
+    } catch {
+      Alert.alert("Copy failed", "Unable to copy invite code right now.");
+    }
+  }, [user.inviteCode]);
 
   // ==========================
   // DELETE CONFIRM MODAL STATE (shared)
@@ -1025,7 +1043,14 @@ export default function PatientDashboard() {
             >
               {user.inviteCode || "—"}
             </ThemedText>
-            <Ionicons name="copy-outline" size={18} color={colors.icon} />
+            <Pressable
+              onPress={handleCopyInviteCode}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Copy invite code"
+            >
+              <Ionicons name="copy-outline" size={18} color={colors.icon} />
+            </Pressable>
           </View>
         </View>
 

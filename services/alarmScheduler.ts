@@ -5,6 +5,7 @@ import { appointmentsApi } from "@/services/appointmentsApi";
 import { medicationsApi } from "@/services/medicationsApi";
 
 const SCHEDULED_IDS_KEY = "scheduledNotificationIds:v1";
+let scheduleQueue: Promise<void> = Promise.resolve();
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -74,7 +75,7 @@ function getReAlarmAfterMinutes(m: any): number {
   return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
 }
 
-export async function rescheduleAllFromCache(opts: {
+async function rescheduleAllFromCacheInternal(opts: {
   medications: any[];
   appointments: any[];
   horizonDays?: number;
@@ -250,26 +251,43 @@ export async function rescheduleAllFromCache(opts: {
   await AsyncStorage.setItem(SCHEDULED_IDS_KEY, JSON.stringify(ids));
 }
 
-export async function rescheduleCurrentUserNotifications(horizonDays = 14) {
-  const entries = await AsyncStorage.multiGet(["userId", "userRole"]);
-  const values = Object.fromEntries(entries);
-  const userId = values.userId ?? "";
-  const userRole = values.userRole ?? "";
+function enqueueSchedule(task: () => Promise<void>) {
+  const next = scheduleQueue.then(task, task);
+  scheduleQueue = next.catch(() => {});
+  return next;
+}
 
-  if (!userId) {
-    await cancelPreviouslyScheduled();
-    return;
-  }
+export function rescheduleAllFromCache(opts: {
+  medications: any[];
+  appointments: any[];
+  horizonDays?: number;
+  userRole?: "PATIENT" | "CAREGIVER" | string;
+}) {
+  return enqueueSchedule(() => rescheduleAllFromCacheInternal(opts));
+}
 
-  const [medications, appointments] = await Promise.all([
-    medicationsApi.getCached(userId),
-    appointmentsApi.getCached(userId),
-  ]);
+export function rescheduleCurrentUserNotifications(horizonDays = 14) {
+  return enqueueSchedule(async () => {
+    const entries = await AsyncStorage.multiGet(["userId", "userRole"]);
+    const values = Object.fromEntries(entries);
+    const userId = values.userId ?? "";
+    const userRole = values.userRole ?? "";
 
-  await rescheduleAllFromCache({
-    medications,
-    appointments,
-    horizonDays,
-    userRole,
+    if (!userId) {
+      await cancelPreviouslyScheduled();
+      return;
+    }
+
+    const [medications, appointments] = await Promise.all([
+      medicationsApi.getCached(userId),
+      appointmentsApi.getCached(userId),
+    ]);
+
+    await rescheduleAllFromCacheInternal({
+      medications,
+      appointments,
+      horizonDays,
+      userRole,
+    });
   });
 }

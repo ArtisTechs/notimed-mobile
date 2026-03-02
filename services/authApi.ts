@@ -66,6 +66,10 @@ export type ConnectedUserResponse = {
 
 export type SendOtpRequest = { email: string };
 export type VerifyOtpRequest = { email: string; code: string };
+export type ResetPasswordRequest = {
+  email: string;
+  newPassword: string;
+};
 
 export const authApi = {
   // POST /api/auth/register
@@ -139,10 +143,24 @@ export const authApi = {
       json: { email } as SendOtpRequest,
     }),
 
+  // POST /api/auth/forgot-password
+  forgotPassword: (email: string) =>
+    http<MessageResponse>("/api/auth/forgot-password", {
+      method: "POST",
+      json: { email } as SendOtpRequest,
+    }),
+
   // POST /api/auth/otp/verify
   verifyOtp: (email: string, code: string) =>
     http<MessageResponse>("/api/auth/otp/verify", {
       method: "POST",
       json: { email, code } as VerifyOtpRequest,
+    }),
+
+  // POST /api/auth/reset-password
+  resetPassword: (email: string, newPassword: string) =>
+    http<MessageResponse>("/api/auth/reset-password", {
+      method: "POST",
+      json: { email, newPassword } as ResetPasswordRequest,
     }),
 };

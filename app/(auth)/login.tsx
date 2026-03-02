@@ -23,6 +23,7 @@ import { authApi } from "@/services/authApi";
 import { router } from "expo-router";
 
 type Mode = "login" | "signup";
+type ForgotPasswordStep = "idle" | "otp" | "reset";
 
 export default function AuthScreen() {
   const { resolvedScheme, fontScale } = useAppTheme();
@@ -36,6 +37,10 @@ export default function AuthScreen() {
   const [password, setPassword] = useState("");
 
   const isLogin = mode === "login";
+  const [forgotPasswordStep, setForgotPasswordStep] =
+    useState<ForgotPasswordStep>("idle");
+  const showForgotPassword =
+    isLogin && forgotPasswordStep === "idle" && email.trim().length > 0;
 
   const [firstName, setFirstName] = useState("");
   const [middleName, setMiddleName] = useState("");
@@ -45,6 +50,8 @@ export default function AuthScreen() {
   const [otpStep, setOtpStep] = useState(false);
   const [otp, setOtp] = useState("");
   const [countdown, setCountdown] = useState(30);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [toast, setToast] = useState<{
     visible: boolean;
     message: string;
@@ -59,11 +66,11 @@ export default function AuthScreen() {
 
   React.useEffect(() => {
     let timer: any;
-    if (otpStep && countdown > 0) {
+    if ((otpStep || forgotPasswordStep === "otp") && countdown > 0) {
       timer = setTimeout(() => setCountdown((c) => c - 1), 1000);
     }
     return () => clearTimeout(timer);
-  }, [otpStep, countdown]);
+  }, [otpStep, forgotPasswordStep, countdown]);
 
   const showToast = (
     message: string,
@@ -80,6 +87,9 @@ export default function AuthScreen() {
     const v = value.trim();
     return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(v);
   };
+
+  const isUnregisteredEmailMessage = (message?: string) =>
+    message?.trim().toLowerCase() === "email is not registered.";
 
   const validateLogin = () => {
     const newErrors: any = {};
@@ -118,6 +128,33 @@ export default function AuthScreen() {
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
+  };
+
+  const validateResetPassword = () => {
+    const newErrors: any = {};
+
+    if (!newPassword.trim()) newErrors.newPassword = "New password is required";
+    else if (newPassword.trim().length < 6) {
+      newErrors.newPassword = "Password must be at least 6 characters";
+    }
+
+    if (!confirmPassword.trim()) {
+      newErrors.confirmPassword = "Confirm your new password";
+    } else if (newPassword !== confirmPassword) {
+      newErrors.confirmPassword = "Passwords do not match";
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const resetForgotPasswordFlow = () => {
+    setForgotPasswordStep("idle");
+    setOtp("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setCountdown(30);
+    setErrors({});
   };
 
   return (
@@ -174,7 +211,11 @@ export default function AuthScreen() {
                   styles.tab,
                   isLogin && { backgroundColor: colors.tint },
                 ]}
-                onPress={() => setMode("login")}
+                onPress={() => {
+                  setMode("login");
+                  setOtpStep(false);
+                  resetForgotPasswordFlow();
+                }}
               >
                 <ThemedText
                   style={{
@@ -192,7 +233,10 @@ export default function AuthScreen() {
                   styles.tab,
                   !isLogin && { backgroundColor: colors.tint },
                 ]}
-                onPress={() => setMode("signup")}
+                onPress={() => {
+                  setMode("signup");
+                  resetForgotPasswordFlow();
+                }}
               >
                 <ThemedText
                   style={{
@@ -211,170 +255,555 @@ export default function AuthScreen() {
             >
               {isLogin ? (
                 <>
-                  <ThemedText
-                    style={[
-                      styles.formTitle,
-                      { fontSize: 20 * fontScale, color: colors.text },
-                    ]}
-                  >
-                    Log In
-                  </ThemedText>
+                  {forgotPasswordStep === "idle" ? (
+                    <>
+                      <ThemedText
+                        style={[
+                          styles.formTitle,
+                          { fontSize: 20 * fontScale, color: colors.text },
+                        ]}
+                      >
+                        Log In
+                      </ThemedText>
 
-                  <ThemedText
-                    style={[
-                      styles.label,
-                      { fontSize: 12 * fontScale, color: colors.text },
-                    ]}
-                  >
-                    Email
-                  </ThemedText>
+                      <ThemedText
+                        style={[
+                          styles.label,
+                          { fontSize: 12 * fontScale, color: colors.text },
+                        ]}
+                      >
+                        Email
+                      </ThemedText>
 
-                  <TextInput
-                    placeholder="Enter your email address"
-                    placeholderTextColor={colors.icon}
-                    value={email}
-                    onChangeText={setEmail}
-                    style={[
-                      styles.input,
-                      {
-                        backgroundColor: colors.inputBackground,
-                        borderColor: colors.border,
-                        color: colors.text,
-                      },
-                    ]}
-                  />
-
-                  {errors.email && (
-                    <ThemedText
-                      style={[
-                        styles.errorText,
-                        { fontSize: 12 * fontScale, color: colors.error },
-                      ]}
-                    >
-                      {errors.email}
-                    </ThemedText>
-                  )}
-
-                  <ThemedText
-                    style={[
-                      styles.label,
-                      { fontSize: 12 * fontScale, color: colors.text },
-                    ]}
-                  >
-                    Password
-                  </ThemedText>
-
-                  <View
-                    style={[
-                      styles.passwordContainer,
-                      {
-                        backgroundColor: colors.inputBackground,
-                        borderColor: colors.border,
-                      },
-                    ]}
-                  >
-                    <TextInput
-                      placeholder="Enter your password"
-                      placeholderTextColor={colors.icon}
-                      secureTextEntry={!showPassword}
-                      value={password}
-                      onChangeText={setPassword}
-                      style={[styles.passwordInput, { color: colors.text }]}
-                    />
-
-                    <Pressable
-                      onPress={() => setShowPassword((prev) => !prev)}
-                      style={styles.eyeButton}
-                    >
-                      <Ionicons
-                        name={showPassword ? "eye-off-outline" : "eye-outline"}
-                        size={20}
-                        color={colors.icon}
+                      <TextInput
+                        placeholder="Enter your email address"
+                        placeholderTextColor={colors.icon}
+                        value={email}
+                        onChangeText={setEmail}
+                        style={[
+                          styles.input,
+                          {
+                            backgroundColor: colors.inputBackground,
+                            borderColor: colors.border,
+                            color: colors.text,
+                          },
+                        ]}
                       />
-                    </Pressable>
-                  </View>
 
-                  {errors.password && (
-                    <ThemedText
-                      style={[
-                        styles.errorText,
-                        { fontSize: 12 * fontScale, color: colors.error },
-                      ]}
-                    >
-                      {errors.password}
-                    </ThemedText>
+                      {errors.email && (
+                        <ThemedText
+                          style={[
+                            styles.errorText,
+                            { fontSize: 12 * fontScale, color: colors.error },
+                          ]}
+                        >
+                          {errors.email}
+                        </ThemedText>
+                      )}
+
+                      <ThemedText
+                        style={[
+                          styles.label,
+                          { fontSize: 12 * fontScale, color: colors.text },
+                        ]}
+                      >
+                        Password
+                      </ThemedText>
+
+                      <View
+                        style={[
+                          styles.passwordContainer,
+                          {
+                            backgroundColor: colors.inputBackground,
+                            borderColor: colors.border,
+                          },
+                        ]}
+                      >
+                        <TextInput
+                          placeholder="Enter your password"
+                          placeholderTextColor={colors.icon}
+                          secureTextEntry={!showPassword}
+                          value={password}
+                          onChangeText={setPassword}
+                          style={[styles.passwordInput, { color: colors.text }]}
+                        />
+
+                        <Pressable
+                          onPress={() => setShowPassword((prev) => !prev)}
+                          style={styles.eyeButton}
+                        >
+                          <Ionicons
+                            name={
+                              showPassword ? "eye-off-outline" : "eye-outline"
+                            }
+                            size={20}
+                            color={colors.icon}
+                          />
+                        </Pressable>
+                      </View>
+
+                      {errors.password && (
+                        <ThemedText
+                          style={[
+                            styles.errorText,
+                            { fontSize: 12 * fontScale, color: colors.error },
+                          ]}
+                        >
+                          {errors.password}
+                        </ThemedText>
+                      )}
+
+                      {showForgotPassword && (
+                        <Pressable
+                          style={styles.forgotPasswordButton}
+                          onPress={async () => {
+                            if (!isValidEmail(email)) {
+                              showToast(
+                                "Enter a valid email address first",
+                                "error",
+                              );
+                              return;
+                            }
+
+                            setLoadingText("Sending password recovery code...");
+                            setLoginLoading(true);
+
+                            try {
+                              const response = await authApi.forgotPassword(
+                                email.trim(),
+                              );
+                              if (isUnregisteredEmailMessage(response.message)) {
+                                showToast(response.message, "error");
+                                return;
+                              }
+
+                              setForgotPasswordStep("otp");
+                              setOtp("");
+                              setCountdown(30);
+                              setErrors({});
+                              showToast("OTP sent", "success");
+                            } catch (e: any) {
+                              showToast(
+                                e?.message ?? "Failed to send recovery email",
+                                "error",
+                              );
+                            } finally {
+                              setLoginLoading(false);
+                            }
+                          }}
+                        >
+                          <ThemedText
+                            style={{
+                              color: colors.tint,
+                              fontWeight: "600",
+                              fontSize: 12 * fontScale,
+                            }}
+                          >
+                            Forgot Password?
+                          </ThemedText>
+                        </Pressable>
+                      )}
+
+                      <Pressable
+                        style={[
+                          styles.primaryButton,
+                          { backgroundColor: colors.tint },
+                        ]}
+                        onPress={async () => {
+                          if (!validateLogin()) return;
+
+                          setLoadingText("Signing in...");
+                          setLoginLoading(true);
+
+                          try {
+                            const user = await authApi.login({
+                              email: email.trim(),
+                              password,
+                            });
+
+                            setLoadingText("Fetching account details...");
+                            const details = await authApi.getUserById(user.id);
+
+                            const normalizedRole = String(
+                              details.role,
+                            ).toLowerCase();
+
+                            await AsyncStorage.multiSet([
+                              ["userId", String(details.id)],
+                              ["userRole", normalizedRole],
+                              [
+                                "userEmail",
+                                String(details.email ?? email.trim()),
+                              ],
+                              [
+                                "userName",
+                                `${details.firstName ?? ""} ${details.lastName ?? ""}`.trim(),
+                              ],
+                              ["userDetails", JSON.stringify(details)],
+                            ]);
+
+                            if (normalizedRole === "caregiver") {
+                              router.replace(
+                                "/(drawer)/dashboard-caregiver-view",
+                              );
+                            } else {
+                              router.replace(
+                                "/(drawer)/dashboard-patient-view",
+                              );
+                            }
+                          } catch (e: any) {
+                            const message = e?.message ?? "";
+
+                            if (
+                              message.includes("Invalid credentials") ||
+                              message.includes("401")
+                            ) {
+                              showToast("Invalid email or password", "error");
+                            } else {
+                              showToast(message || "Login failed", "error");
+                            }
+                          } finally {
+                            setLoginLoading(false);
+                          }
+                        }}
+                      >
+                        <ThemedText
+                          style={{
+                            color: colors.buttonText,
+                            fontWeight: "600",
+                            fontSize: 14 * fontScale,
+                          }}
+                        >
+                          Log In
+                        </ThemedText>
+                      </Pressable>
+                    </>
+                  ) : forgotPasswordStep === "otp" ? (
+                    <>
+                      <Pressable
+                        onPress={resetForgotPasswordFlow}
+                        style={styles.backButton}
+                      >
+                        <ThemedText
+                          style={{
+                            color: colors.tint,
+                            fontWeight: "600",
+                            fontSize: 14 * fontScale,
+                          }}
+                        >
+                          Back
+                        </ThemedText>
+                      </Pressable>
+
+                      <ThemedText
+                        style={[
+                          styles.formTitle,
+                          { fontSize: 20 * fontScale, color: colors.text },
+                        ]}
+                      >
+                        Verify OTP
+                      </ThemedText>
+
+                      <ThemedText
+                        style={[
+                          styles.helperText,
+                          { fontSize: 12 * fontScale, color: colors.icon },
+                        ]}
+                      >
+                        Enter the 6-digit code sent to your email to continue
+                        resetting your password.
+                      </ThemedText>
+
+                      <TextInput
+                        placeholder="123456"
+                        placeholderTextColor={colors.icon}
+                        keyboardType="number-pad"
+                        maxLength={6}
+                        value={otp}
+                        onChangeText={(v) => {
+                          const cleaned = v.replace(/\D/g, "");
+                          setOtp(cleaned);
+                          if (errors.otp)
+                            setErrors((e: any) => ({ ...e, otp: undefined }));
+                        }}
+                        style={[
+                          styles.input,
+                          {
+                            backgroundColor: colors.inputBackground,
+                            borderColor: colors.border,
+                            color: colors.text,
+                            textAlign: "center",
+                            fontSize: 20 * fontScale,
+                            letterSpacing: 8,
+                          },
+                        ]}
+                      />
+
+                      {errors.otp && (
+                        <ThemedText
+                          style={[
+                            styles.errorText,
+                            { fontSize: 12 * fontScale, color: colors.error },
+                          ]}
+                        >
+                          {errors.otp}
+                        </ThemedText>
+                      )}
+
+                      <Pressable
+                        disabled={countdown > 0}
+                        onPress={async () => {
+                          try {
+                            setLoadingText("Resending OTP...");
+                            setLoginLoading(true);
+
+                            const response = await authApi.forgotPassword(
+                              email.trim(),
+                            );
+                            if (isUnregisteredEmailMessage(response.message)) {
+                              showToast(response.message, "error");
+                              resetForgotPasswordFlow();
+                              return;
+                            }
+
+                            setCountdown(30);
+                            showToast("OTP resent", "success");
+                          } catch (e: any) {
+                            showToast(
+                              e?.message ?? "Failed to resend OTP",
+                              "error",
+                            );
+                          } finally {
+                            setLoginLoading(false);
+                          }
+                        }}
+                      >
+                        <ThemedText
+                          style={{
+                            textAlign: "center",
+                            marginBottom: 16,
+                            fontSize: 12 * fontScale,
+                            color: countdown > 0 ? colors.icon : colors.tint,
+                          }}
+                        >
+                          {countdown > 0
+                            ? `Resend OTP in ${countdown}s`
+                            : "Resend OTP"}
+                        </ThemedText>
+                      </Pressable>
+
+                      <Pressable
+                        style={[
+                          styles.primaryButton,
+                          { backgroundColor: colors.tint },
+                        ]}
+                        onPress={async () => {
+                          if (!validateOtp()) return;
+
+                          try {
+                            setLoadingText("Verifying OTP...");
+                            setLoginLoading(true);
+
+                            await authApi.verifyOtp(email.trim(), otp.trim());
+                            setForgotPasswordStep("reset");
+                            setErrors({});
+                            showToast("OTP verified", "success");
+                          } catch (e: any) {
+                            showToast(
+                              e?.message ?? "OTP verification failed",
+                              "error",
+                            );
+                          } finally {
+                            setLoginLoading(false);
+                          }
+                        }}
+                      >
+                        <ThemedText
+                          style={{
+                            color: colors.buttonText,
+                            fontWeight: "600",
+                            fontSize: 14 * fontScale,
+                          }}
+                        >
+                          Verify OTP
+                        </ThemedText>
+                      </Pressable>
+                    </>
+                  ) : (
+                    <>
+                      <Pressable
+                        onPress={resetForgotPasswordFlow}
+                        style={styles.backButton}
+                      >
+                        <ThemedText
+                          style={{
+                            color: colors.tint,
+                            fontWeight: "600",
+                            fontSize: 14 * fontScale,
+                          }}
+                        >
+                          Back to Login
+                        </ThemedText>
+                      </Pressable>
+
+                      <ThemedText
+                        style={[
+                          styles.formTitle,
+                          { fontSize: 20 * fontScale, color: colors.text },
+                        ]}
+                      >
+                        Create New Password
+                      </ThemedText>
+
+                      <ThemedText
+                        style={[
+                          styles.label,
+                          { fontSize: 12 * fontScale, color: colors.text },
+                        ]}
+                      >
+                        New Password
+                      </ThemedText>
+
+                      <View
+                        style={[
+                          styles.passwordContainer,
+                          {
+                            backgroundColor: colors.inputBackground,
+                            borderColor: colors.border,
+                          },
+                        ]}
+                      >
+                        <TextInput
+                          placeholder="Enter new password"
+                          placeholderTextColor={colors.icon}
+                          secureTextEntry={!showPassword}
+                          value={newPassword}
+                          onChangeText={setNewPassword}
+                          style={[styles.passwordInput, { color: colors.text }]}
+                        />
+
+                        <Pressable
+                          onPress={() => setShowPassword((prev) => !prev)}
+                          style={styles.eyeButton}
+                        >
+                          <Ionicons
+                            name={
+                              showPassword ? "eye-off-outline" : "eye-outline"
+                            }
+                            size={20}
+                            color={colors.icon}
+                          />
+                        </Pressable>
+                      </View>
+
+                      {errors.newPassword && (
+                        <ThemedText
+                          style={[
+                            styles.errorText,
+                            { fontSize: 12 * fontScale, color: colors.error },
+                          ]}
+                        >
+                          {errors.newPassword}
+                        </ThemedText>
+                      )}
+
+                      <ThemedText
+                        style={[
+                          styles.label,
+                          { fontSize: 12 * fontScale, color: colors.text },
+                        ]}
+                      >
+                        Confirm New Password
+                      </ThemedText>
+
+                      <View
+                        style={[
+                          styles.passwordContainer,
+                          {
+                            backgroundColor: colors.inputBackground,
+                            borderColor: colors.border,
+                          },
+                        ]}
+                      >
+                        <TextInput
+                          placeholder="Confirm new password"
+                          placeholderTextColor={colors.icon}
+                          secureTextEntry={!showPassword}
+                          value={confirmPassword}
+                          onChangeText={setConfirmPassword}
+                          style={[styles.passwordInput, { color: colors.text }]}
+                        />
+
+                        <Pressable
+                          onPress={() => setShowPassword((prev) => !prev)}
+                          style={styles.eyeButton}
+                        >
+                          <Ionicons
+                            name={
+                              showPassword ? "eye-off-outline" : "eye-outline"
+                            }
+                            size={20}
+                            color={colors.icon}
+                          />
+                        </Pressable>
+                      </View>
+
+                      {errors.confirmPassword && (
+                        <ThemedText
+                          style={[
+                            styles.errorText,
+                            { fontSize: 12 * fontScale, color: colors.error },
+                          ]}
+                        >
+                          {errors.confirmPassword}
+                        </ThemedText>
+                      )}
+
+                      <Pressable
+                        style={[
+                          styles.primaryButton,
+                          { backgroundColor: colors.tint },
+                        ]}
+                        onPress={async () => {
+                          if (!validateResetPassword()) return;
+
+                          try {
+                            setLoadingText("Updating password...");
+                            setLoginLoading(true);
+
+                            await authApi.resetPassword(
+                              email.trim(),
+                              newPassword,
+                            );
+
+                            setPassword("");
+                            resetForgotPasswordFlow();
+                            showToast(
+                              "Password reset successful. Please log in.",
+                              "success",
+                            );
+                          } catch (e: any) {
+                            showToast(
+                              e?.message ?? "Failed to reset password",
+                              "error",
+                            );
+                          } finally {
+                            setLoginLoading(false);
+                          }
+                        }}
+                      >
+                        <ThemedText
+                          style={{
+                            color: colors.buttonText,
+                            fontWeight: "600",
+                            fontSize: 14 * fontScale,
+                          }}
+                        >
+                          Save New Password
+                        </ThemedText>
+                      </Pressable>
+                    </>
                   )}
-
-                  <Pressable
-                    style={[
-                      styles.primaryButton,
-                      { backgroundColor: colors.tint },
-                    ]}
-                    onPress={async () => {
-                      if (!validateLogin()) return;
-
-                      setLoadingText("Signing in...");
-                      setLoginLoading(true);
-
-                      try {
-                        // 1) login
-                        const user = await authApi.login({
-                          email: email.trim(),
-                          password,
-                        });
-
-                        // 2) fetch full user details (authoritative)
-                        setLoadingText("Fetching account details...");
-                        const details = await authApi.getUserById(user.id);
-
-                        // 3) cache (flat keys you already use + raw JSON for full object)
-                        const normalizedRole = String(
-                          details.role,
-                        ).toLowerCase(); // "patient" | "caregiver"
-
-                        await AsyncStorage.multiSet([
-                          ["userId", String(details.id)],
-                          ["userRole", normalizedRole],
-                          ["userEmail", String(details.email ?? email.trim())],
-                          [
-                            "userName",
-                            `${details.firstName ?? ""} ${details.lastName ?? ""}`.trim(),
-                          ],
-                          ["userDetails", JSON.stringify(details)],
-                        ]);
-
-                        // 4) navigate
-                        if (normalizedRole === "caregiver") {
-                          router.replace("/(drawer)/dashboard-caregiver-view");
-                        } else {
-                          router.replace("/(drawer)/dashboard-patient-view");
-                        }
-                      } catch (e: any) {
-                        const message = e?.message ?? "";
-
-                        if (
-                          message.includes("Invalid credentials") ||
-                          message.includes("401")
-                        ) {
-                          showToast("Invalid email or password", "error");
-                        } else {
-                          showToast(message || "Login failed", "error");
-                        }
-                      } finally {
-                        setLoginLoading(false);
-                      }
-                    }}
-                  >
-                    <ThemedText
-                      style={{
-                        color: colors.buttonText,
-                        fontWeight: "600",
-                        fontSize: 14 * fontScale,
-                      }}
-                    >
-                      Log In
-                    </ThemedText>
-                  </Pressable>
                 </>
               ) : (
                 <>
@@ -923,6 +1352,11 @@ const styles = StyleSheet.create({
   errorText: {
     marginTop: -10,
     marginBottom: 10,
+  },
+  forgotPasswordButton: {
+    alignSelf: "flex-end",
+    marginTop: -4,
+    marginBottom: 14,
   },
 
   backButton: {

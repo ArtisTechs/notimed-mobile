@@ -1,8 +1,9 @@
 // app/(drawer)/reminder.tsx
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import React from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ThemedText } from "@/components/themed-text";
@@ -65,6 +66,8 @@ export default function ReminderScreen() {
 
   const params = useLocalSearchParams<Params>();
   const kind = (params.kind ?? "MEDICATION") as HistoryType;
+  const [accessChecked, setAccessChecked] = React.useState(false);
+  const [hasAccess, setHasAccess] = React.useState(false);
 
   const offsetMinutes = React.useMemo(() => {
     const n = Number(params.reminderOffsetMinutes);
@@ -212,12 +215,46 @@ export default function ReminderScreen() {
   }, [clearTimers, stopAlarmOnly]);
 
   React.useEffect(() => {
+    let mounted = true;
+
+    const ensurePatientAccess = async () => {
+      const [role, userId] = await Promise.all([
+        AsyncStorage.getItem("userRole"),
+        AsyncStorage.getItem("userId"),
+      ]);
+      const allowed = role === "patient";
+
+      if (!mounted) return;
+
+      setHasAccess(allowed);
+      setAccessChecked(true);
+
+      if (!allowed) {
+        if (userId && role === "caregiver") {
+          router.replace("/(drawer)/dashboard-caregiver-view");
+          return;
+        }
+
+        router.replace("/(auth)/get-started");
+      }
+    };
+
+    ensurePatientAccess();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!hasAccess) return;
     // start cycle immediately when screen opens
     startAlarmCycle();
     return () => stopAllAudio();
-  }, [startAlarmCycle, stopAllAudio]);
+  }, [hasAccess, startAlarmCycle, stopAllAudio]);
 
   React.useEffect(() => {
+    if (!hasAccess) return;
     // keep sound alive if loaded but not playing (during active ring window)
     if ((status as any)?.isLoaded === false) return;
     if ((status as any)?.loading === true) return;
@@ -228,7 +265,7 @@ export default function ReminderScreen() {
     try {
       if (!(status as any)?.playing) player.play();
     } catch {}
-  }, [status, player]);
+  }, [hasAccess, status, player]);
 
   const postHistory = React.useCallback(
     async (status: HistoryStatus) => {
@@ -285,6 +322,21 @@ export default function ReminderScreen() {
     setSaving(false);
     router.back();
   };
+
+  if (!accessChecked) {
+    return (
+      <SafeAreaView
+        edges={["top", "bottom"]}
+        style={[styles.loadingContainer, { backgroundColor: colors.background }]}
+      >
+        <ActivityIndicator size="large" color={colors.tint} />
+      </SafeAreaView>
+    );
+  }
+
+  if (!hasAccess) {
+    return null;
+  }
 
   return (
     <SafeAreaView
@@ -380,6 +432,11 @@ export default function ReminderScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 20 },
+  loadingContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   card: {
     flex: 1,
     borderRadius: 28,
