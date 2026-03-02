@@ -905,7 +905,7 @@ export default function CaregiverDashboard() {
                     color: colors.text,
                   }}
                 >
-                  Medication Schedule
+                  Medications
                 </ThemedText>
 
                 <Pressable

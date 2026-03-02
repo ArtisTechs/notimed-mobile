@@ -11,6 +11,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -64,6 +65,19 @@ export default function CaregiversScreen() {
   const [loadingRequests, setLoadingRequests] = useState(true);
 
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<CaregiverRow | null>(null);
+
+  const openRemoveConfirm = useCallback((row: CaregiverRow) => {
+    setRemoveTarget(row);
+    setRemoveConfirmOpen(true);
+  }, []);
+
+  const closeRemoveConfirm = useCallback(() => {
+    setRemoveConfirmOpen(false);
+    setRemoveTarget(null);
+  }, []);
 
   const loadMeAndLists = useCallback(async () => {
     const myId = await getStoredUserId();
@@ -138,6 +152,12 @@ export default function CaregiversScreen() {
     },
     [me],
   );
+
+  const confirmRemove = useCallback(async () => {
+    if (!removeTarget) return;
+    await removeAccess(removeTarget.id);
+    closeRemoveConfirm();
+  }, [removeAccess, removeTarget, closeRemoveConfirm]);
 
   const approve = useCallback(
     async (caregiverId: string) => {
@@ -252,7 +272,7 @@ export default function CaregiversScreen() {
         </View>
 
         <Pressable
-          onPress={() => removeAccess(item.id)}
+          onPress={() => openRemoveConfirm(item)}
           disabled={actionLoadingId === item.id}
           style={[
             styles.removeButton,
@@ -284,7 +304,7 @@ export default function CaregiversScreen() {
     colors,
     fontScale,
     actionLoadingId,
-    removeAccess,
+    openRemoveConfirm,
   ]);
 
   const renderRequests = useMemo(() => {
@@ -408,92 +428,200 @@ export default function CaregiversScreen() {
   ]);
 
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={{ padding: 20 }}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.headerRow}>
-        <View>
-          <ThemedText
-            style={{
-              fontSize: 20 * fontScale,
-              fontWeight: "700",
-              color: colors.text,
-            }}
-          >
-            CAREGIVERS
-          </ThemedText>
+    <>
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.background }]}
+        contentContainerStyle={{ padding: 20 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.headerRow}>
+          <View>
+            <ThemedText
+              style={{
+                fontSize: 20 * fontScale,
+                fontWeight: "700",
+                color: colors.text,
+              }}
+            >
+              CAREGIVERS
+            </ThemedText>
 
-          <ThemedText
-            style={{
-              marginTop: 4,
-              fontSize: 13 * fontScale,
-              color: colors.icon,
-              letterSpacing: 0.5,
-            }}
-          >
-            Manage and monitor caregiver access
-          </ThemedText>
+            <ThemedText
+              style={{
+                marginTop: 4,
+                fontSize: 13 * fontScale,
+                color: colors.icon,
+                letterSpacing: 0.5,
+              }}
+            >
+              Manage and monitor caregiver access
+            </ThemedText>
+          </View>
         </View>
-      </View>
 
-      <Pressable
-        style={[styles.refreshButton, { borderColor: colors.border }]}
-        onPress={refresh}
-        disabled={loadingConnected || loadingRequests}
-      >
-        <Ionicons name="refresh-outline" size={16} color={colors.icon} />
-        <ThemedText
-          style={{
-            marginLeft: 8,
-            color: colors.icon,
-            fontSize: 13 * fontScale,
-          }}
+        <Pressable
+          style={[styles.refreshButton, { borderColor: colors.border }]}
+          onPress={refresh}
+          disabled={loadingConnected || loadingRequests}
         >
-          Refresh
-        </ThemedText>
-      </Pressable>
+          <Ionicons name="refresh-outline" size={16} color={colors.icon} />
+          <ThemedText
+            style={{
+              marginLeft: 8,
+              color: colors.icon,
+              fontSize: 13 * fontScale,
+            }}
+          >
+            Refresh
+          </ThemedText>
+        </Pressable>
 
-      <View
-        style={[
-          styles.card,
-          { borderColor: colors.tint, backgroundColor: colors.card },
-        ]}
-      >
         <View
-          style={[styles.tabRow, { backgroundColor: colors.inputBackground }]}
+          style={[
+            styles.card,
+            { borderColor: colors.tint, backgroundColor: colors.card },
+          ]}
         >
-          {(["connected", "requests"] as const).map((tab) => {
-            const isActive = activeTab === tab;
-            return (
+          <View
+            style={[styles.tabRow, { backgroundColor: colors.inputBackground }]}
+          >
+            {(["connected", "requests"] as const).map((tab) => {
+              const isActive = activeTab === tab;
+              return (
+                <Pressable
+                  key={tab}
+                  onPress={() => setActiveTab(tab)}
+                  style={[
+                    styles.tab,
+                    isActive && { backgroundColor: colors.tint },
+                  ]}
+                >
+                  <ThemedText
+                    style={{
+                      color: isActive ? colors.buttonText : colors.text,
+                      fontWeight: "600",
+                      fontSize: 13 * fontScale,
+                    }}
+                  >
+                    {tab.toUpperCase()}
+                  </ThemedText>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View style={{ marginTop: 10 }}>
+            {activeTab === "connected" ? renderConnected : renderRequests}
+          </View>
+        </View>
+      </ScrollView>
+
+      {/* CONFIRM REMOVE MODAL */}
+      <Modal
+        transparent
+        visible={removeConfirmOpen}
+        animationType="fade"
+        onRequestClose={closeRemoveConfirm}
+      >
+        <Pressable
+          style={[styles.modalBackdrop]}
+          onPress={closeRemoveConfirm}
+        />
+
+        <View style={styles.modalCenter}>
+          <View
+            style={[
+              styles.modalCard,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <ThemedText
+              style={{
+                fontSize: 16 * fontScale,
+                fontWeight: "700",
+                color: colors.text,
+              }}
+            >
+              REMOVE CAREGIVER?
+            </ThemedText>
+
+            <ThemedText
+              style={{
+                marginTop: 8,
+                fontSize: 13 * fontScale,
+                color: colors.icon,
+                lineHeight: 18 * fontScale,
+              }}
+              numberOfLines={3}
+            >
+              {removeTarget
+                ? `This will disconnect ${removeTarget.name} from your account.`
+                : "This will disconnect the caregiver from your account."}
+            </ThemedText>
+
+            <View style={styles.modalButtons}>
               <Pressable
-                key={tab}
-                onPress={() => setActiveTab(tab)}
+                onPress={closeRemoveConfirm}
+                disabled={!!removeTarget && actionLoadingId === removeTarget.id}
                 style={[
-                  styles.tab,
-                  isActive && { backgroundColor: colors.tint },
+                  styles.modalBtn,
+                  {
+                    borderColor: colors.border,
+                    backgroundColor: colors.inputBackground,
+                    opacity:
+                      !!removeTarget && actionLoadingId === removeTarget.id
+                        ? 0.6
+                        : 1,
+                  },
                 ]}
               >
                 <ThemedText
                   style={{
-                    color: isActive ? colors.buttonText : colors.text,
-                    fontWeight: "600",
                     fontSize: 13 * fontScale,
+                    fontWeight: "600",
+                    color: colors.text,
                   }}
                 >
-                  {tab.toUpperCase()}
+                  CANCEL
                 </ThemedText>
               </Pressable>
-            );
-          })}
-        </View>
 
-        <View style={{ marginTop: 10 }}>
-          {activeTab === "connected" ? renderConnected : renderRequests}
+              <Pressable
+                onPress={confirmRemove}
+                disabled={!removeTarget || actionLoadingId === removeTarget.id}
+                style={[
+                  styles.modalBtn,
+                  {
+                    backgroundColor: colors.error,
+                    opacity:
+                      !removeTarget || actionLoadingId === removeTarget.id
+                        ? 0.6
+                        : 1,
+                  },
+                ]}
+              >
+                {!removeTarget || actionLoadingId === removeTarget.id ? (
+                  <ActivityIndicator />
+                ) : (
+                  <ThemedText
+                    style={{
+                      fontSize: 13 * fontScale,
+                      fontWeight: "700",
+                      color: colors.buttonText,
+                    }}
+                  >
+                    REMOVE
+                  </ThemedText>
+                )}
+              </Pressable>
+            </View>
+          </View>
         </View>
-      </View>
-    </ScrollView>
+      </Modal>
+    </>
   );
 }
 
@@ -573,5 +701,38 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 30,
+  },
+
+  // MODAL
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+
+  modalCenter: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+
+  modalCard: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+  },
+
+  modalButtons: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 16,
+  },
+
+  modalBtn: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

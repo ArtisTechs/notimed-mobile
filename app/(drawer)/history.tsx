@@ -1,11 +1,13 @@
-// app/(drawer)/history.tsx  (or wherever your HistoryScreen lives)
+// app/(drawer)/history.tsx
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
+import { authApi, UserDetailsResponse } from "@/services/authApi";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import React, { useEffect, useMemo, useState } from "react";
+import { Picker } from "@react-native-picker/picker";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
@@ -38,11 +40,108 @@ export default function HistoryScreen() {
   const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
 
+  // ==========================
+  // USER LOAD (+ caregiver patient selector)
+  // ==========================
+  const [user, setUser] = React.useState<UserDetailsResponse>({
+    id: "",
+    firstName: "",
+    middleName: "",
+    lastName: "",
+    email: "",
+    role: "PATIENT",
+    inviteCode: "",
+    connectedUsers: [],
+  });
+
+  React.useEffect(() => {
+    let mounted = true;
+
+    const load = async () => {
+      try {
+        const cached = await AsyncStorage.getItem("userDetails");
+        if (cached && mounted) setUser(JSON.parse(cached));
+
+        const userId = await AsyncStorage.getItem("userId");
+        if (!userId) return;
+
+        const details = await authApi.getUserById(userId);
+
+        await AsyncStorage.multiSet([
+          ["userId", String(details.id)],
+          ["userRole", String(details.role).toLowerCase()],
+          ["userEmail", String(details.email ?? "")],
+          [
+            "userName",
+            `${details.firstName ?? ""} ${details.lastName ?? ""}`.trim(),
+          ],
+          ["userDetails", JSON.stringify(details)],
+        ]);
+
+        if (mounted) setUser(details);
+      } catch {
+        // keep cached
+      }
+    };
+
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const isCaregiver = String(user.role).toUpperCase() === "CAREGIVER";
+  const [selectedPatientId, setSelectedPatientId] = React.useState<string>("");
+
+  const patientOptions = useMemo(() => {
+    const list = (user.connectedUsers ?? []) as any[];
+
+    return list
+      .map((u) => {
+        const id = String(u?.id ?? "");
+        const name = String(
+          u?.name ?? `${u?.firstName ?? ""} ${u?.lastName ?? ""}`.trim() ?? "",
+        ).trim();
+
+        return { id, label: name || u?.email || id };
+      })
+      .filter((x) => x.id);
+  }, [user.connectedUsers]);
+
+  React.useEffect(() => {
+    if (!isCaregiver) {
+      if (selectedPatientId) setSelectedPatientId("");
+      return;
+    }
+
+    if (!selectedPatientId && patientOptions.length > 0) {
+      setSelectedPatientId(patientOptions[0].id);
+    }
+
+    if (
+      selectedPatientId &&
+      patientOptions.length > 0 &&
+      !patientOptions.some((p) => p.id === selectedPatientId)
+    ) {
+      setSelectedPatientId(patientOptions[0].id);
+    }
+  }, [isCaregiver, patientOptions, selectedPatientId]);
+
+  const targetUserId = useMemo(() => {
+    if (!user.id) return "";
+    if (!isCaregiver) return user.id;
+    return selectedPatientId || "";
+  }, [user.id, isCaregiver, selectedPatientId]);
+
+  // ==========================
+  // DATE FILTER
+  // ==========================
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
 
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refetching, setRefetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const getStatusColor = (status: HistoryStatus) =>
@@ -87,59 +186,48 @@ export default function HistoryScreen() {
     };
   };
 
-  const getStoredUserId = async (): Promise<string | null> => {
-    const direct = await AsyncStorage.getItem("userId");
-    if (direct) return direct;
+  const loadHistory = useCallback(
+    async (opts?: { asRefetch?: boolean }) => {
+      const asRefetch = opts?.asRefetch ?? false;
 
-    const userJson =
-      (await AsyncStorage.getItem("user")) ??
-      (await AsyncStorage.getItem("userDetails")) ??
-      (await AsyncStorage.getItem("auth:user"));
+      if (asRefetch) setRefetching(true);
+      else setLoading(true);
 
-    if (!userJson) return null;
-
-    try {
-      const parsed = JSON.parse(userJson);
-      const id = parsed?.id ?? parsed?.userId;
-      return typeof id === "string" ? id : null;
-    } catch {
-      return null;
-    }
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      setLoading(true);
       setError(null);
 
       try {
-        const userId = await getStoredUserId();
-        if (!userId) {
-          if (!cancelled) setItems([]);
+        if (!targetUserId) {
+          setItems([]);
           return;
         }
 
         const date = formatISODate(selectedDate);
-        const res = await historyApi.list({ userId, date });
-
-        if (!cancelled) setItems(res.map(mapApiItem));
+        const res = await historyApi.list({ userId: targetUserId, date });
+        setItems(res.map(mapApiItem));
       } catch (e: any) {
-        if (!cancelled) {
-          setItems([]);
-          setError(e?.message ?? "Failed to load history");
-        }
+        setItems([]);
+        setError(e?.message ?? "Failed to load history");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (asRefetch) setRefetching(false);
+        else setLoading(false);
       }
+    },
+    [targetUserId, selectedDate],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (cancelled) return;
+      await loadHistory();
     };
 
-    load();
+    run();
     return () => {
       cancelled = true;
     };
-  }, [selectedDate]);
+  }, [loadHistory]);
 
   const filteredData = useMemo(() => {
     const selectedISO = formatISODate(selectedDate);
@@ -154,23 +242,42 @@ export default function HistoryScreen() {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.titleContainer}>
-        <ThemedText
-          style={{
-            fontSize: 20 * fontScale,
-            fontWeight: "700",
-            color: colors.text,
-          }}
-        >
-          HISTORY
-        </ThemedText>
-        <ThemedText
-          style={[
-            styles.subtitle,
-            { fontSize: 14 * fontScale, color: colors.text },
-          ]}
-        >
-          View Your Adherence
-        </ThemedText>
+        <View style={styles.titleRow}>
+          <View style={{ flex: 1 }}>
+            <ThemedText
+              style={{
+                fontSize: 20 * fontScale,
+                fontWeight: "700",
+                color: colors.text,
+              }}
+            >
+              HISTORY
+            </ThemedText>
+            <ThemedText
+              style={[
+                styles.subtitle,
+                { fontSize: 14 * fontScale, color: colors.text },
+              ]}
+            >
+              View Your Adherence
+            </ThemedText>
+          </View>
+
+          <Pressable
+            style={[
+              styles.refetchBtn,
+              {
+                borderColor: colors.tint,
+                opacity: !targetUserId || refetching ? 0.6 : 1,
+              },
+            ]}
+            onPress={() => loadHistory({ asRefetch: true })}
+            disabled={!targetUserId || refetching}
+            hitSlop={10}
+          >
+            <Ionicons name="refresh" size={18} color={colors.tint} />
+          </Pressable>
+        </View>
       </View>
 
       <View
@@ -182,9 +289,59 @@ export default function HistoryScreen() {
           },
         ]}
       >
+        {isCaregiver && (
+          <View style={{ marginBottom: 12 }}>
+            <ThemedText
+              style={{
+                color: colors.icon,
+                fontSize: 12 * fontScale,
+                fontWeight: "700",
+                letterSpacing: 0.8,
+                marginBottom: 8,
+              }}
+            >
+              PATIENT
+            </ThemedText>
+
+            <View
+              style={[
+                styles.pickerWrap,
+                {
+                  borderColor: colors.border,
+                  backgroundColor: colors.inputBackground,
+                },
+              ]}
+            >
+              <Picker
+                selectedValue={selectedPatientId}
+                onValueChange={(v) => setSelectedPatientId(String(v))}
+                style={[
+                  styles.picker,
+                  { color: colors.text, fontSize: 14 * fontScale },
+                ]}
+                dropdownIconColor={colors.icon}
+              >
+                {patientOptions.length === 0 ? (
+                  <Picker.Item label="No connected patients" value="" />
+                ) : (
+                  patientOptions.map((p) => (
+                    <Picker.Item key={p.id} label={p.label} value={p.id} />
+                  ))
+                )}
+              </Picker>
+            </View>
+          </View>
+        )}
+
         <Pressable
-          style={[styles.dropdown, { backgroundColor: colors.tint }]}
-          onPress={() => setShowPicker(true)}
+          style={[
+            styles.dropdown,
+            { backgroundColor: colors.tint, opacity: !targetUserId ? 0.6 : 1 },
+          ]}
+          onPress={() => {
+            if (!targetUserId) return;
+            setShowPicker(true);
+          }}
         >
           <ThemedText
             style={[
@@ -212,13 +369,29 @@ export default function HistoryScreen() {
         )}
 
         <ScrollView contentContainerStyle={{ paddingBottom: 20 }}>
-          {loading && (
+          {!targetUserId && (
+            <View style={{ paddingVertical: 18, alignItems: "center" }}>
+              <Ionicons name="people-outline" size={32} color={colors.icon} />
+              <ThemedText
+                style={{
+                  marginTop: 8,
+                  color: colors.icon,
+                  fontSize: 13 * fontScale,
+                  textAlign: "center",
+                }}
+              >
+                SELECT A PATIENT TO VIEW HISTORY
+              </ThemedText>
+            </View>
+          )}
+
+          {targetUserId && (loading || refetching) && (
             <View style={{ paddingVertical: 18, alignItems: "center" }}>
               <ActivityIndicator />
             </View>
           )}
 
-          {!loading && error && (
+          {targetUserId && !loading && !refetching && error && (
             <ThemedText
               style={{
                 fontSize: 14 * fontScale,
@@ -232,63 +405,69 @@ export default function HistoryScreen() {
             </ThemedText>
           )}
 
-          {filteredData.map((item, index) => (
-            <View key={item.id}>
-              <View style={styles.item}>
-                <ThemedText
-                  style={[
-                    styles.itemTitle,
-                    { color: colors.tint, fontSize: 18 * fontScale },
-                  ]}
-                >
-                  {item.title}{" "}
+          {targetUserId &&
+            !loading &&
+            !refetching &&
+            filteredData.map((item, index) => (
+              <View key={item.id}>
+                <View style={styles.item}>
                   <ThemedText
-                    style={{ fontSize: 14 * fontScale, color: colors.text }}
+                    style={[
+                      styles.itemTitle,
+                      { color: colors.tint, fontSize: 18 * fontScale },
+                    ]}
                   >
-                    ({item.type})
+                    {item.title}{" "}
+                    <ThemedText
+                      style={{ fontSize: 14 * fontScale, color: colors.text }}
+                    >
+                      ({item.type})
+                    </ThemedText>
                   </ThemedText>
-                </ThemedText>
 
-                <ThemedText
-                  style={{
-                    color: getStatusColor(item.status),
-                    fontSize: 14 * fontScale,
-                    marginTop: 4,
-                  }}
-                >
-                  {item.message}
-                </ThemedText>
-
-                {!!item.lastDate && (
                   <ThemedText
-                    style={{ fontSize: 14 * fontScale, color: colors.text }}
+                    style={{
+                      color: getStatusColor(item.status),
+                      fontSize: 14 * fontScale,
+                      marginTop: 4,
+                    }}
                   >
-                    Last dose was during {item.lastDate}.
+                    {item.message}
                   </ThemedText>
+
+                  {!!item.lastDate && (
+                    <ThemedText
+                      style={{ fontSize: 14 * fontScale, color: colors.text }}
+                    >
+                      Last dose was during {item.lastDate}.
+                    </ThemedText>
+                  )}
+                </View>
+
+                {index !== filteredData.length - 1 && (
+                  <View
+                    style={[styles.divider, { backgroundColor: colors.border }]}
+                  />
                 )}
               </View>
+            ))}
 
-              {index !== filteredData.length - 1 && (
-                <View
-                  style={[styles.divider, { backgroundColor: colors.border }]}
-                />
-              )}
-            </View>
-          ))}
-
-          {!loading && filteredData.length === 0 && (
-            <ThemedText
-              style={{
-                fontSize: 14 * fontScale,
-                color: colors.text,
-                opacity: 0.6,
-                marginTop: 20,
-                textAlign: "center",
-              }}
-            >
-              No records for selected date.
-            </ThemedText>
-          )}
+          {targetUserId &&
+            !loading &&
+            !refetching &&
+            filteredData.length === 0 && (
+              <ThemedText
+                style={{
+                  fontSize: 14 * fontScale,
+                  color: colors.text,
+                  opacity: 0.6,
+                  marginTop: 20,
+                  textAlign: "center",
+                }}
+              >
+                No records for selected date.
+              </ThemedText>
+            )}
         </ScrollView>
       </View>
     </View>
@@ -304,13 +483,19 @@ const styles = StyleSheet.create({
   titleContainer: {
     marginTop: 1,
   },
-  title: {
-    fontWeight: "700",
-    marginBottom: 5,
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
   subtitle: {
     opacity: 0.7,
     marginBottom: 10,
+  },
+  refetchBtn: {
+    borderWidth: 1,
+    padding: 10,
+    borderRadius: 10,
   },
   card: {
     marginTop: 15,
@@ -330,6 +515,15 @@ const styles = StyleSheet.create({
   },
   dropdownText: {
     fontWeight: "600",
+  },
+  pickerWrap: {
+    borderWidth: 1,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  picker: {
+    width: "100%",
+    height: 48,
   },
   item: {
     paddingVertical: 12,

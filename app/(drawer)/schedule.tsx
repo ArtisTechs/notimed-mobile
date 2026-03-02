@@ -15,6 +15,7 @@ import {
 } from "@/services/medicationsApi";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Picker } from "@react-native-picker/picker";
 import React, { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 
@@ -200,12 +201,58 @@ export default function ScheduleScreen() {
     };
   }, []);
 
+  // ==========================
+  // CAREGIVER: PATIENT SELECTOR
+  // ==========================
+  const isCaregiver = String(user.role).toUpperCase() === "CAREGIVER";
+  const [selectedPatientId, setSelectedPatientId] = React.useState<string>("");
+
+  const patientOptions = useMemo(() => {
+    const list = (user.connectedUsers ?? []) as any[];
+
+    return list
+      .map((u) => {
+        const id = String(u?.id ?? "");
+        const name = String(
+          u?.name ?? `${u?.firstName ?? ""} ${u?.lastName ?? ""}`.trim() ?? "",
+        ).trim();
+
+        return { id, label: name || u?.email || id };
+      })
+      .filter((x) => x.id);
+  }, [user.connectedUsers]);
+
+  React.useEffect(() => {
+    if (!isCaregiver) {
+      if (selectedPatientId) setSelectedPatientId("");
+      return;
+    }
+
+    if (!selectedPatientId && patientOptions.length > 0) {
+      setSelectedPatientId(patientOptions[0].id);
+    }
+
+    if (
+      selectedPatientId &&
+      patientOptions.length > 0 &&
+      !patientOptions.some((p) => p.id === selectedPatientId)
+    ) {
+      setSelectedPatientId(patientOptions[0].id);
+    }
+  }, [isCaregiver, patientOptions, selectedPatientId]);
+
+  const targetUserId = useMemo(() => {
+    if (!user.id) return "";
+    if (!isCaregiver) return user.id;
+    return selectedPatientId || "";
+  }, [user.id, isCaregiver, selectedPatientId]);
+
   const refetchMeds = React.useCallback(async () => {
-    if (!user.id) return;
+    if (!targetUserId) return;
 
     setRefetchingMeds(true);
     try {
-      const list = await medicationsApi.listByUser(user.id);
+      const list = await medicationsApi.listByUser(targetUserId);
       const ui = list
         .map(toUiMedication)
         .sort((a, b) =>
@@ -220,7 +267,7 @@ export default function ScheduleScreen() {
     } finally {
       setRefetchingMeds(false);
     }
-  }, [user.id]);
+  }, [targetUserId]);
 
   // ==========================
   // MEDICATIONS (single cache source = medicationsApi)
@@ -235,7 +282,7 @@ export default function ScheduleScreen() {
     s === "completed" ? "COMPLETED" : "ONGOING";
 
   const toUpsertRequest = (m: MedicationPayload): MedicationUpsertRequest => ({
-    userId: user.id,
+    userId: targetUserId,
     name: m.name,
     dose: m.dose,
     startDate: m.startDate,
@@ -279,11 +326,14 @@ export default function ScheduleScreen() {
     let mounted = true;
 
     const loadMeds = async () => {
-      if (!user.id) return;
+      if (!targetUserId) {
+        if (mounted) setMedications([]);
+        return;
+      }
 
       // 1) cached (service-owned)
       try {
-        const cached = await medicationsApi.getCached(user.id);
+        const cached = await medicationsApi.getCached(targetUserId);
         const uiCached = cached
           .map(toUiMedication)
           .sort((a, b) =>
@@ -307,10 +357,10 @@ export default function ScheduleScreen() {
     return () => {
       mounted = false;
     };
-  }, [user.id, refetchMeds]);
+  }, [targetUserId, refetchMeds]);
 
   const handleAddMedication = async (payload: MedicationPayload) => {
-    if (!user.id) return;
+    if (!targetUserId) return;
 
     const created = await medicationsApi.create(toUpsertRequest(payload));
     const createdUi = toUiMedication(created);
@@ -325,7 +375,7 @@ export default function ScheduleScreen() {
   };
 
   const handleUpdateMedication = async (payload: MedicationPayload) => {
-    if (!user.id) return;
+    if (!targetUserId) return;
 
     const updated = await medicationsApi.update(
       payload.id,
@@ -345,10 +395,10 @@ export default function ScheduleScreen() {
   };
 
   const handleDeleteMedication = async (id: string) => {
-    if (!user.id) return;
+    if (!targetUserId) return;
 
     try {
-      await medicationsApi.delete(user.id, id);
+      await medicationsApi.delete(targetUserId, id);
     } finally {
       setMedications((prev) => prev.filter((m) => m.id !== id));
     }
@@ -388,7 +438,7 @@ export default function ScheduleScreen() {
     <>
       <AddMedicationModal
         visible={medModalOpen}
-        userId={user.id}
+        userId={targetUserId}
         mode={editingMed ? "update" : "add"}
         initialData={editingMed ?? undefined}
         onClose={() => {
@@ -438,7 +488,10 @@ export default function ScheduleScreen() {
             <Pressable
               style={[
                 styles.addButton,
-                { borderColor: colors.tint, opacity: refetchingMeds ? 0.6 : 1 },
+                {
+                  borderColor: colors.tint,
+                  opacity: refetchingMeds ? 0.6 : 1,
+                },
               ]}
               onPress={refetchMeds}
               disabled={refetchingMeds}
@@ -447,11 +500,16 @@ export default function ScheduleScreen() {
             </Pressable>
 
             <Pressable
-              style={[styles.addButton, { borderColor: colors.tint }]}
+              style={[
+                styles.addButton,
+                { borderColor: colors.tint, opacity: !targetUserId ? 0.5 : 1 },
+              ]}
               onPress={() => {
+                if (!targetUserId) return;
                 setEditingMed(null);
                 setMedModalOpen(true);
               }}
+              disabled={!targetUserId}
             >
               <Ionicons name="add" size={18} color={colors.tint} />
             </Pressable>
@@ -464,6 +522,50 @@ export default function ScheduleScreen() {
             { borderColor: colors.tint, backgroundColor: colors.card },
           ]}
         >
+          {isCaregiver && (
+            <View style={styles.patientRow}>
+              <ThemedText
+                style={{
+                  color: colors.icon,
+                  fontSize: 12 * fontScale,
+                  fontWeight: "700",
+                  letterSpacing: 0.8,
+                  marginBottom: 8,
+                }}
+              >
+                PATIENT
+              </ThemedText>
+
+              <View
+                style={[
+                  styles.pickerWrap,
+                  {
+                    borderColor: colors.border,
+                    backgroundColor: colors.inputBackground,
+                  },
+                ]}
+              >
+                <Picker
+                  selectedValue={selectedPatientId}
+                  onValueChange={(v) => setSelectedPatientId(String(v))}
+                  style={[
+                    styles.picker,
+                    { color: colors.text, fontSize: 14 * fontScale },
+                  ]}
+                  dropdownIconColor={colors.icon}
+                >
+                  {patientOptions.length === 0 ? (
+                    <Picker.Item label="No connected patients" value="" />
+                  ) : (
+                    patientOptions.map((p) => (
+                      <Picker.Item key={p.id} label={p.label} value={p.id} />
+                    ))
+                  )}
+                </Picker>
+              </View>
+            </View>
+          )}
+
           <View style={styles.monthRow}>
             <Pressable onPress={() => changeMonth(-1)}>
               <Ionicons name="chevron-back" size={18} color={colors.tint} />
@@ -588,7 +690,25 @@ export default function ScheduleScreen() {
                 </ThemedText>
               </View>
 
-              {filteredSchedules.length === 0 ? (
+              {!targetUserId ? (
+                <View style={styles.emptyState}>
+                  <Ionicons
+                    name="people-outline"
+                    size={32}
+                    color={colors.icon}
+                  />
+                  <ThemedText
+                    style={{
+                      marginTop: 8,
+                      color: colors.icon,
+                      fontSize: 13 * fontScale,
+                      textAlign: "center",
+                    }}
+                  >
+                    SELECT A PATIENT TO VIEW SCHEDULE
+                  </ThemedText>
+                </View>
+              ) : filteredSchedules.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Ionicons
                     name="calendar-outline"
@@ -689,6 +809,21 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderRadius: 16,
     padding: 16,
+  },
+
+  patientRow: {
+    marginBottom: 12,
+  },
+
+  pickerWrap: {
+    borderWidth: 1,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+
+  picker: {
+    width: "100%",
+    height: 48,
   },
 
   monthRow: {

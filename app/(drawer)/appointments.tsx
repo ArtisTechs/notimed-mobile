@@ -13,6 +13,7 @@ import {
 import { authApi, UserDetailsResponse } from "@/services/authApi";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Picker } from "@react-native-picker/picker";
 import React, { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 
@@ -102,12 +103,66 @@ export default function AppointmentScreen() {
     connectedUsers: [],
   });
 
+  // ==========================
+  // CAREGIVER: PATIENT SELECTOR
+  // ==========================
+  const isCaregiver = String(user.role).toUpperCase() === "CAREGIVER";
+
+  // store selected patient id (only used for caregiver)
+  const [selectedPatientId, setSelectedPatientId] = React.useState<string>("");
+
+  // best-effort normalization of connected user display
+  const patientOptions = useMemo(() => {
+    const list = (user.connectedUsers ?? []) as any[];
+
+    return list
+      .map((u) => {
+        const id = String(u?.id ?? "");
+        const name = String(
+          u?.name ?? `${u?.firstName ?? ""} ${u?.lastName ?? ""}`.trim() ?? "",
+        ).trim();
+
+        return {
+          id,
+          label: name || u?.email || id,
+        };
+      })
+      .filter((x) => x.id);
+  }, [user.connectedUsers]);
+
+  React.useEffect(() => {
+    if (!isCaregiver) {
+      if (selectedPatientId) setSelectedPatientId("");
+      return;
+    }
+
+    // auto-select first patient if none is selected
+    if (!selectedPatientId && patientOptions.length > 0) {
+      setSelectedPatientId(patientOptions[0].id);
+    }
+
+    // if current selection no longer exists, fallback to first
+    if (
+      selectedPatientId &&
+      patientOptions.length > 0 &&
+      !patientOptions.some((p) => p.id === selectedPatientId)
+    ) {
+      setSelectedPatientId(patientOptions[0].id);
+    }
+  }, [isCaregiver, patientOptions, selectedPatientId]);
+
+  const targetUserId = useMemo(() => {
+    if (!user.id) return "";
+    if (!isCaregiver) return user.id;
+    return selectedPatientId || "";
+  }, [user.id, isCaregiver, selectedPatientId]);
+
   const refetchAppts = React.useCallback(async () => {
-    if (!user.id) return;
+    if (!targetUserId) return;
 
     setRefetchingAppts(true);
     try {
-      const list = await appointmentsApi.list(user.id);
+      const list = await appointmentsApi.list(targetUserId);
       const ui = list.map(toUiAppointment).sort((a, b) => {
         const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
         const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
@@ -120,7 +175,7 @@ export default function AppointmentScreen() {
     } finally {
       setRefetchingAppts(false);
     }
-  }, [user.id]);
+  }, [targetUserId]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -181,11 +236,14 @@ export default function AppointmentScreen() {
     let mounted = true;
 
     const loadAppts = async () => {
-      if (!user.id) return;
+      if (!targetUserId) {
+        if (mounted) setAppointments([]);
+        return;
+      }
 
       // 1) cached (service-owned)
       try {
-        const cached = await appointmentsApi.getCached(user.id);
+        const cached = await appointmentsApi.getCached(targetUserId);
         const uiCached = cached.map(toUiAppointment).sort((a, b) => {
           const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
           const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
@@ -207,13 +265,13 @@ export default function AppointmentScreen() {
     return () => {
       mounted = false;
     };
-  }, [user.id, refetchAppts]);
+  }, [targetUserId, refetchAppts]);
 
   const handleAddAppointment = async (payload: AppointmentPayload) => {
-    if (!user.id) return;
+    if (!targetUserId) return;
 
     const created = await appointmentsApi.create({
-      userId: user.id,
+      userId: targetUserId,
       title: payload.title,
       appointmentDate: payload.appointmentDate,
       appointmentTime: payload.appointmentTime,
@@ -232,7 +290,7 @@ export default function AppointmentScreen() {
   };
 
   const handleUpdateAppointment = async (payload: AppointmentPayload) => {
-    if (!user.id) return;
+    if (!targetUserId) return;
 
     const updated = await appointmentsApi.update(payload.id, {
       title: payload.title,
@@ -255,10 +313,10 @@ export default function AppointmentScreen() {
   };
 
   const handleDeleteAppointment = async (id: string) => {
-    if (!user.id) return;
+    if (!targetUserId) return;
 
     try {
-      await appointmentsApi.delete(user.id, id);
+      await appointmentsApi.delete(targetUserId, id);
     } finally {
       setAppointments((prev) => prev.filter((a) => a.id !== id));
     }
@@ -299,7 +357,7 @@ export default function AppointmentScreen() {
     <>
       <AddAppointmentModal
         visible={apptModalOpen}
-        userId={user.id}
+        userId={targetUserId}
         mode={editingAppt ? "update" : "add"}
         initialData={editingAppt ?? undefined}
         onClose={() => {
@@ -361,11 +419,19 @@ export default function AppointmentScreen() {
             </Pressable>
 
             <Pressable
-              style={[styles.addButton, { borderColor: colors.tint }]}
+              style={[
+                styles.addButton,
+                {
+                  borderColor: colors.tint,
+                  opacity: !targetUserId ? 0.5 : 1,
+                },
+              ]}
               onPress={() => {
+                if (!targetUserId) return;
                 setEditingAppt(null);
                 setApptModalOpen(true);
               }}
+              disabled={!targetUserId}
             >
               <Ionicons name="add" size={18} color={colors.tint} />
             </Pressable>
@@ -378,6 +444,50 @@ export default function AppointmentScreen() {
             { borderColor: colors.tint, backgroundColor: colors.card },
           ]}
         >
+          {isCaregiver && (
+            <View style={styles.patientRow}>
+              <ThemedText
+                style={{
+                  color: colors.icon,
+                  fontSize: 12 * fontScale,
+                  fontWeight: "700",
+                  letterSpacing: 0.8,
+                  marginBottom: 8,
+                }}
+              >
+                PATIENT
+              </ThemedText>
+
+              <View
+                style={[
+                  styles.pickerWrap,
+                  {
+                    borderColor: colors.border,
+                    backgroundColor: colors.inputBackground,
+                  },
+                ]}
+              >
+                <Picker
+                  selectedValue={selectedPatientId}
+                  onValueChange={(v) => setSelectedPatientId(String(v))}
+                  style={[
+                    styles.picker,
+                    { color: colors.text, fontSize: 14 * fontScale },
+                  ]}
+                  dropdownIconColor={colors.icon}
+                >
+                  {patientOptions.length === 0 ? (
+                    <Picker.Item label="No connected patients" value="" />
+                  ) : (
+                    patientOptions.map((p) => (
+                      <Picker.Item key={p.id} label={p.label} value={p.id} />
+                    ))
+                  )}
+                </Picker>
+              </View>
+            </View>
+          )}
+
           <View style={styles.monthRow}>
             <Pressable onPress={() => changeMonth(-1)}>
               <Ionicons name="chevron-back" size={18} color={colors.tint} />
@@ -499,7 +609,25 @@ export default function AppointmentScreen() {
                 </ThemedText>
               </View>
 
-              {filteredAppointments.length === 0 ? (
+              {!targetUserId ? (
+                <View style={styles.emptyState}>
+                  <Ionicons
+                    name="people-outline"
+                    size={32}
+                    color={colors.icon}
+                  />
+                  <ThemedText
+                    style={{
+                      marginTop: 8,
+                      color: colors.icon,
+                      fontSize: 13 * fontScale,
+                      textAlign: "center",
+                    }}
+                  >
+                    SELECT A PATIENT TO VIEW APPOINTMENTS
+                  </ThemedText>
+                </View>
+              ) : filteredAppointments.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Ionicons
                     name="calendar-outline"
@@ -596,6 +724,21 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderRadius: 16,
     padding: 16,
+  },
+
+  patientRow: {
+    marginBottom: 12,
+  },
+
+  pickerWrap: {
+    borderWidth: 1,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+
+  picker: {
+    width: "100%",
+    height: 48,
   },
 
   monthRow: {

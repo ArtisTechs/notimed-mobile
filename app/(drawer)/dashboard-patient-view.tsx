@@ -636,7 +636,7 @@ export default function PatientDashboard() {
                 { color: colors.text, fontSize: 18 * fontScale },
               ]}
             >
-              Medication Schedule
+              Medications
             </ThemedText>
 
             <Pressable
