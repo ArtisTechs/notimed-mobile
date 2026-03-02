@@ -22,7 +22,21 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+const normalizeTime = (t?: string) => {
+  if (!t) return "00:00";
+  const [h = "0", m = "0"] = t.split(":");
+  return `${pad2(Number(h))}:${pad2(Number(m))}`;
+};
 
 const formatTime12h = (value?: string) => {
   if (!value) return "—";
@@ -36,9 +50,108 @@ const formatTime12h = (value?: string) => {
   return `${h12}:${mm} ${period}`;
 };
 
+const toISODateLocal = (d: Date) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+const parseISODateLocal = (iso: string) => {
+  const [y, m, d] = iso.split("-").map((n) => Number(n));
+  return new Date(y, (m ?? 1) - 1, d ?? 1); // local midnight
+};
+
+const daysBetweenLocal = (fromIso: string, toIso: string) => {
+  const a = parseISODateLocal(fromIso);
+  const b = parseISODateLocal(toIso);
+  const ms = b.getTime() - a.getTime();
+  return Math.floor(ms / 86400000);
+};
+
+const monthsBetweenLocal = (fromIso: string, toIso: string) => {
+  const a = parseISODateLocal(fromIso);
+  const b = parseISODateLocal(toIso);
+  return (
+    (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth())
+  );
+};
+
+const toDowCode = (d: Date) =>
+  ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][d.getDay()];
+
+const isWithinRange = (dateIso: string, startIso: string, endIso?: string) => {
+  if (dateIso < startIso) return false;
+  if (endIso && dateIso > endIso) return false;
+  return true;
+};
+
+const isMedicationDueOn = (m: MedicationPayload, dateIso: string) => {
+  const start = m.startDate;
+  const end = m.repeat.endDate;
+
+  if (!start) return false;
+  if (!isWithinRange(dateIso, start, end)) return false;
+
+  const type = m.repeat.type;
+  const interval = Math.max(1, Number(m.repeat.interval || 1));
+
+  if (type === "once") {
+    return dateIso === start;
+  }
+
+  if (type === "daily") {
+    const diff = daysBetweenLocal(start, dateIso);
+    return diff >= 0 && diff % interval === 0;
+  }
+
+  if (type === "weekly") {
+    const dow = toDowCode(parseISODateLocal(dateIso));
+    const daysOfWeek = m.repeat.daysOfWeek ?? [];
+    if (!daysOfWeek.includes(dow)) return false;
+
+    const diffDays = daysBetweenLocal(start, dateIso);
+    if (diffDays < 0) return false;
+
+    const diffWeeks = Math.floor(diffDays / 7);
+    return diffWeeks % interval === 0;
+  }
+
+  if (type === "monthly") {
+    const startD = parseISODateLocal(start).getDate();
+    const curD = parseISODateLocal(dateIso).getDate();
+    if (startD !== curD) return false;
+
+    const diffMonths = monthsBetweenLocal(start, dateIso);
+    return diffMonths >= 0 && diffMonths % interval === 0;
+  }
+
+  // if your modal supports "custom" (day/week/month) in some builds:
+  // treat it as interval+unit. If unit missing, default to day.
+  if ((type as any) === "custom") {
+    const unit = (m.repeat as any).unit ?? "day";
+    if (unit === "day") {
+      const diff = daysBetweenLocal(start, dateIso);
+      return diff >= 0 && diff % interval === 0;
+    }
+    if (unit === "week") {
+      const diffDays = daysBetweenLocal(start, dateIso);
+      if (diffDays < 0) return false;
+      const diffWeeks = Math.floor(diffDays / 7);
+      return diffWeeks % interval === 0;
+    }
+    if (unit === "month") {
+      const startD = parseISODateLocal(start).getDate();
+      const curD = parseISODateLocal(dateIso).getDate();
+      if (startD !== curD) return false;
+      const diffMonths = monthsBetweenLocal(start, dateIso);
+      return diffMonths >= 0 && diffMonths % interval === 0;
+    }
+  }
+
+  return false;
+};
+
 export default function PatientDashboard() {
   const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
+  const [refreshing, setRefreshing] = React.useState(false);
 
   const [user, setUser] = React.useState<UserDetailsResponse>({
     id: "",
@@ -76,6 +189,64 @@ export default function PatientDashboard() {
   const apptsKey = React.useMemo(() => {
     const uid = user.id || "unknown";
     return `appointments:${uid}`;
+  }, [user.id]);
+
+  // ==========================
+  // MEDICATIONS (keep your existing code below)
+  // ==========================
+  const [medications, setMedications] = React.useState<MedicationPayload[]>([]);
+  const [medModalOpen, setMedModalOpen] = React.useState(false);
+  const [editingMed, setEditingMed] = React.useState<MedicationPayload | null>(
+    null,
+  );
+
+  const toApiStatus = (s: MedicationPayload["status"]): MedicationStatus =>
+    s === "completed" ? "COMPLETED" : "ONGOING";
+
+  const toUpsertRequest = (m: MedicationPayload): MedicationUpsertRequest => ({
+    userId: user.id,
+    name: m.name,
+    dose: m.dose,
+    startDate: m.startDate,
+    repeat: {
+      type: m.repeat.type,
+      interval: m.repeat.interval,
+      unit: m.repeat.unit,
+      daysOfWeek: m.repeat.daysOfWeek,
+      endDate: m.repeat.endDate ?? null,
+    },
+    schedule: {
+      time: m.schedule.time,
+      reminderOffsetMinutes: m.schedule.reminderOffsetMinutes,
+    },
+    status: toApiStatus(m.status),
+    notes: m.notes ?? null,
+  });
+
+  const toUiMedication = (m: MedicationResponse): MedicationPayload => ({
+    id: m.id,
+    userId: m.userId,
+    name: m.name,
+    dose: m.dose,
+    startDate: m.startDate,
+    repeat: {
+      type: m.repeat.type,
+      interval: m.repeat.interval,
+      unit: m.repeat.unit,
+      daysOfWeek: m.repeat.daysOfWeek,
+      endDate: m.repeat.endDate ?? undefined,
+    },
+    schedule: {
+      time: m.schedule.time,
+      reminderOffsetMinutes: m.schedule.reminderOffsetMinutes,
+    },
+    status: m.status === "COMPLETED" ? "completed" : "ongoing",
+    notes: m.notes ?? undefined,
+  });
+
+  const medsKey = React.useMemo(() => {
+    const uid = user.id || "unknown";
+    return `medications:${uid}`;
   }, [user.id]);
 
   // ==========================
@@ -155,6 +326,28 @@ export default function PatientDashboard() {
     };
   }, [user.id, apptsKey]);
 
+  const todayIso = React.useMemo(() => toISODateLocal(new Date()), []);
+
+  const todaysMedications = React.useMemo(() => {
+    return medications
+      .filter((m) => isMedicationDueOn(m, todayIso))
+      .sort((a, b) =>
+        normalizeTime(a.schedule.time).localeCompare(
+          normalizeTime(b.schedule.time),
+        ),
+      );
+  }, [medications, todayIso]);
+
+  const todaysAppointments = React.useMemo(() => {
+    return appointments
+      .filter((a) => a.appointmentDate === todayIso)
+      .sort((a, b) =>
+        normalizeTime(a.appointmentTime).localeCompare(
+          normalizeTime(b.appointmentTime),
+        ),
+      );
+  }, [appointments, todayIso]);
+
   const persistAppts = async (items: AppointmentPayload[]) => {
     if (!user.id) return;
     await AsyncStorage.setItem(apptsKey, JSON.stringify(items));
@@ -209,7 +402,7 @@ export default function PatientDashboard() {
 
   const handleDeleteAppointment = async (id: string) => {
     try {
-      await appointmentsApi.delete(id);
+      await appointmentsApi.delete(user.id, id);
     } finally {
       const next = appointments.filter((a) => a.id !== id);
       setAppointments(next);
@@ -217,62 +410,51 @@ export default function PatientDashboard() {
     }
   };
 
-  // ==========================
-  // MEDICATIONS (keep your existing code below)
-  // ==========================
-  const [medications, setMedications] = React.useState<MedicationPayload[]>([]);
-  const [medModalOpen, setMedModalOpen] = React.useState(false);
-  const [editingMed, setEditingMed] = React.useState<MedicationPayload | null>(
-    null,
-  );
+  const onRefresh = React.useCallback(async () => {
+    if (!user.id) return;
 
-  const toApiStatus = (s: MedicationPayload["status"]): MedicationStatus =>
-    s === "completed" ? "COMPLETED" : "ONGOING";
+    setRefreshing(true);
+    try {
+      // refresh user details (same logic as your USER LOAD effect)
+      const userId = await AsyncStorage.getItem("userId");
+      if (userId) {
+        const details = await authApi.getUserById(userId);
 
-  const toUpsertRequest = (m: MedicationPayload): MedicationUpsertRequest => ({
-    userId: user.id,
-    name: m.name,
-    dose: m.dose,
-    startDate: m.startDate,
-    repeat: {
-      type: m.repeat.type,
-      interval: m.repeat.interval,
-      unit: m.repeat.unit,
-      daysOfWeek: m.repeat.daysOfWeek,
-      endDate: m.repeat.endDate ?? null,
-    },
-    schedule: {
-      time: m.schedule.time,
-      reminderOffsetMinutes: m.schedule.reminderOffsetMinutes,
-    },
-    status: toApiStatus(m.status),
-    notes: m.notes ?? null,
-  });
+        await AsyncStorage.multiSet([
+          ["userId", String(details.id)],
+          ["userRole", String(details.role).toLowerCase()],
+          ["userEmail", String(details.email ?? "")],
+          [
+            "userName",
+            `${details.firstName ?? ""} ${details.lastName ?? ""}`.trim(),
+          ],
+          ["userDetails", JSON.stringify(details)],
+        ]);
 
-  const toUiMedication = (m: MedicationResponse): MedicationPayload => ({
-    id: m.id,
-    userId: m.userId,
-    name: m.name,
-    dose: m.dose,
-    startDate: m.startDate,
-    repeat: {
-      type: m.repeat.type,
-      interval: m.repeat.interval,
-      unit: m.repeat.unit,
-      daysOfWeek: m.repeat.daysOfWeek,
-      endDate: m.repeat.endDate ?? undefined,
-    },
-    schedule: {
-      time: m.schedule.time,
-      reminderOffsetMinutes: m.schedule.reminderOffsetMinutes,
-    },
-    status: m.status === "COMPLETED" ? "completed" : "ongoing",
-    notes: m.notes ?? undefined,
-  });
+        setUser(details);
+      }
 
-  const medsKey = React.useMemo(() => {
-    const uid = user.id || "unknown";
-    return `medications:${uid}`;
+      // refresh appointments (API)
+      const apptList = await appointmentsApi.list(user.id);
+      const apptUi = apptList.map(toUiAppointment).sort((a, b) => {
+        const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
+        const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
+        return aKey.localeCompare(bKey);
+      });
+      setAppointments(apptUi);
+
+      const medList = await medicationsApi.listByUser(user.id);
+      const medUi = medList
+        .map(toUiMedication)
+        .sort((a, b) =>
+          normalizeTime(a.schedule.time).localeCompare(
+            normalizeTime(b.schedule.time),
+          ),
+        );
+      setMedications(medUi);
+    } finally {
+      setRefreshing(false);
+    }
   }, [user.id]);
 
   React.useEffect(() => {
@@ -346,7 +528,7 @@ export default function PatientDashboard() {
 
   const handleDeleteMedication = async (id: string) => {
     try {
-      await medicationsApi.delete(id);
+      await medicationsApi.delete(user.id, id);
     } finally {
       const next = medications.filter((m) => m.id !== id);
       setMedications(next);
@@ -384,6 +566,13 @@ export default function PatientDashboard() {
         style={[styles.container, { backgroundColor: colors.background }]}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.tint}
+          />
+        }
       >
         <View style={styles.header}>
           <ThemedText
@@ -469,8 +658,8 @@ export default function PatientDashboard() {
             </Pressable>
           </View>
 
-          {medications.length > 0 ? (
-            medications.map((med) => (
+          {todaysMedications.length > 0 ? (
+            todaysMedications.map((med) => (
               <View
                 key={med.id}
                 style={[
@@ -609,8 +798,8 @@ export default function PatientDashboard() {
             </Pressable>
           </View>
 
-          {appointments.length > 0 ? (
-            appointments.map((app) => (
+          {todaysAppointments.length > 0 ? (
+            todaysAppointments.map((app) => (
               <View
                 key={app.id}
                 style={[

@@ -2,6 +2,7 @@
 import AddMedicationModal, {
   MedicationPayload,
 } from "@/components/AddMedicationModal";
+import FullscreenLoader from "@/components/FullscreenLoader";
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
@@ -18,6 +19,12 @@ import React, { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
+
+const normalizeTime = (t?: string) => {
+  if (!t) return "00:00";
+  const [h = "0", m = "0"] = t.split(":");
+  return `${pad2(Number(h))}:${pad2(Number(m))}`;
+};
 
 const formatTime12h = (value?: string) => {
   if (!value) return "—";
@@ -73,9 +80,7 @@ const isDueOnDate = (m: MedicationPayload, date: Date) => {
   const unit = m.repeat?.unit ?? (type === "monthly" ? "month" : "day");
   const dow = m.repeat?.daysOfWeek ?? [];
 
-  if (type === "once") {
-    return toYmd(target) === m.startDate;
-  }
+  if (type === "once") return toYmd(target) === m.startDate;
 
   if (type === "daily" || unit === "day") {
     const diff = daysBetween(start, target);
@@ -89,11 +94,8 @@ const isDueOnDate = (m: MedicationPayload, date: Date) => {
     return dow.includes(dayCode(target));
   }
 
-  // monthly
   const mdiff = monthsBetween(start, target);
   if (mdiff % interval !== 0) return false;
-
-  // anchor to start day-of-month (simple rule)
   return target.getDate() === start.getDate();
 };
 
@@ -110,6 +112,7 @@ export default function ScheduleScreen() {
 
   const year = currentDate.getFullYear();
   const monthIndex = currentDate.getMonth();
+  const [refetchingMeds, setRefetchingMeds] = React.useState(false);
 
   const monthLabel = useMemo(() => {
     return currentDate.toLocaleString("en-US", { month: "long" }).toUpperCase();
@@ -139,12 +142,16 @@ export default function ScheduleScreen() {
 
   const changeMonth = (direction: number) => {
     const newDate = new Date(year, monthIndex + direction, 1);
+    const newYear = newDate.getFullYear();
+    const newMonth = newDate.getMonth();
+    const maxDay = new Date(newYear, newMonth + 1, 0).getDate();
+
     setCurrentDate(newDate);
-    setSelectedDate(1);
+    setSelectedDate((d) => Math.min(d, maxDay));
   };
 
   // ==========================
-  // USER LOAD (same pattern as dashboard)
+  // USER LOAD
   // ==========================
   const [user, setUser] = React.useState<UserDetailsResponse>({
     id: "",
@@ -193,8 +200,30 @@ export default function ScheduleScreen() {
     };
   }, []);
 
+  const refetchMeds = React.useCallback(async () => {
+    if (!user.id) return;
+
+    setRefetchingMeds(true);
+    try {
+      const list = await medicationsApi.listByUser(user.id);
+      const ui = list
+        .map(toUiMedication)
+        .sort((a, b) =>
+          normalizeTime(a.schedule.time).localeCompare(
+            normalizeTime(b.schedule.time),
+          ),
+        );
+
+      setMedications(ui);
+    } catch {
+      // keep existing list
+    } finally {
+      setRefetchingMeds(false);
+    }
+  }, [user.id]);
+
   // ==========================
-  // MEDICATIONS (cache + API) + CRUD (same idea as dashboard)
+  // MEDICATIONS (single cache source = medicationsApi)
   // ==========================
   const [medications, setMedications] = React.useState<MedicationPayload[]>([]);
   const [medModalOpen, setMedModalOpen] = React.useState(false);
@@ -218,7 +247,7 @@ export default function ScheduleScreen() {
       endDate: m.repeat.endDate ?? null,
     },
     schedule: {
-      time: m.schedule.time,
+      time: normalizeTime(m.schedule.time),
       reminderOffsetMinutes: m.schedule.reminderOffsetMinutes,
     },
     status: toApiStatus(m.status),
@@ -239,17 +268,12 @@ export default function ScheduleScreen() {
       endDate: m.repeat.endDate ?? undefined,
     },
     schedule: {
-      time: m.schedule.time,
+      time: normalizeTime(m.schedule.time),
       reminderOffsetMinutes: m.schedule.reminderOffsetMinutes,
     },
     status: m.status === "COMPLETED" ? "completed" : "ongoing",
     notes: m.notes ?? undefined,
   });
-
-  const medsKey = React.useMemo(() => {
-    const uid = user.id || "unknown";
-    return `medications:${uid}`;
-  }, [user.id]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -257,22 +281,23 @@ export default function ScheduleScreen() {
     const loadMeds = async () => {
       if (!user.id) return;
 
-      // 1) cached
+      // 1) cached (service-owned)
       try {
-        const cached = await AsyncStorage.getItem(medsKey);
-        if (mounted && cached) setMedications(JSON.parse(cached));
+        const cached = await medicationsApi.getCached(user.id);
+        const uiCached = cached
+          .map(toUiMedication)
+          .sort((a, b) =>
+            normalizeTime(a.schedule.time).localeCompare(
+              normalizeTime(b.schedule.time),
+            ),
+          );
+
+        if (mounted) setMedications(uiCached);
       } catch {}
 
-      // 2) API
+      // 2) API (refresh master list + service cache)
       try {
-        const list = await medicationsApi.listByUser(user.id);
-        const ui = list
-          .map(toUiMedication)
-          .sort((a, b) => a.schedule.time.localeCompare(b.schedule.time));
-
-        if (!mounted) return;
-        setMedications(ui);
-        await AsyncStorage.setItem(medsKey, JSON.stringify(ui));
+        if (mounted) await refetchMeds();
       } catch {
         // keep cached
       }
@@ -282,55 +307,55 @@ export default function ScheduleScreen() {
     return () => {
       mounted = false;
     };
-  }, [user.id, medsKey]);
-
-  const persistMeds = async (items: MedicationPayload[]) => {
-    if (!user.id) return;
-    await AsyncStorage.setItem(medsKey, JSON.stringify(items));
-  };
+  }, [user.id, refetchMeds]);
 
   const handleAddMedication = async (payload: MedicationPayload) => {
     if (!user.id) return;
 
-    const req = toUpsertRequest(payload);
-    const created = await medicationsApi.create(req);
+    const created = await medicationsApi.create(toUpsertRequest(payload));
     const createdUi = toUiMedication(created);
 
-    const next = [createdUi, ...medications].sort((a, b) =>
-      a.schedule.time.localeCompare(b.schedule.time),
+    setMedications((prev) =>
+      [createdUi, ...prev].sort((a, b) =>
+        normalizeTime(a.schedule.time).localeCompare(
+          normalizeTime(b.schedule.time),
+        ),
+      ),
     );
-
-    setMedications(next);
-    await persistMeds(next);
   };
 
   const handleUpdateMedication = async (payload: MedicationPayload) => {
     if (!user.id) return;
 
-    const req = toUpsertRequest(payload);
-    const updated = await medicationsApi.update(payload.id, req);
+    const updated = await medicationsApi.update(
+      payload.id,
+      toUpsertRequest(payload),
+    );
     const updatedUi = toUiMedication(updated);
 
-    const next = medications
-      .map((m) => (m.id === updatedUi.id ? updatedUi : m))
-      .sort((a, b) => a.schedule.time.localeCompare(b.schedule.time));
-
-    setMedications(next);
-    await persistMeds(next);
+    setMedications((prev) =>
+      prev
+        .map((m) => (m.id === updatedUi.id ? updatedUi : m))
+        .sort((a, b) =>
+          normalizeTime(a.schedule.time).localeCompare(
+            normalizeTime(b.schedule.time),
+          ),
+        ),
+    );
   };
 
   const handleDeleteMedication = async (id: string) => {
+    if (!user.id) return;
+
     try {
-      await medicationsApi.delete(id);
+      await medicationsApi.delete(user.id, id);
     } finally {
-      const next = medications.filter((m) => m.id !== id);
-      setMedications(next);
-      await persistMeds(next);
+      setMedications((prev) => prev.filter((m) => m.id !== id));
     }
   };
 
   // ==========================
-  // CALENDAR DOTS + FILTERED LIST (derived from medications)
+  // CALENDAR DOTS + FILTERED LIST
   // ==========================
   const selectedDateObj = useMemo(() => {
     return new Date(year, monthIndex, selectedDate);
@@ -349,11 +374,14 @@ export default function ScheduleScreen() {
   }, [medications, year, monthIndex, daysInMonth]);
 
   const filteredSchedules = useMemo(() => {
-    const list = medications
+    return medications
       .filter((m) => isDueOnDate(m, selectedDateObj))
       .slice()
-      .sort((a, b) => a.schedule.time.localeCompare(b.schedule.time));
-    return list;
+      .sort((a, b) =>
+        normalizeTime(a.schedule.time).localeCompare(
+          normalizeTime(b.schedule.time),
+        ),
+      );
   }, [medications, selectedDateObj]);
 
   return (
@@ -370,12 +398,18 @@ export default function ScheduleScreen() {
         onSubmit={editingMed ? handleUpdateMedication : handleAddMedication}
       />
 
+      <FullscreenLoader
+        visible={refetchingMeds}
+        text="Refreshing schedule..."
+        colors={colors}
+        fontScale={fontScale}
+      />
+
       <ScrollView
         style={[styles.container, { backgroundColor: colors.background }]}
         contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <View style={styles.headerRow}>
           <View>
             <ThemedText
@@ -400,25 +434,34 @@ export default function ScheduleScreen() {
             </ThemedText>
           </View>
 
-          <Pressable
-            style={[styles.addButton, { borderColor: colors.tint }]}
-            onPress={() => {
-              setEditingMed(null);
-              setMedModalOpen(true);
-            }}
-          >
-            <Ionicons name="add" size={18} color={colors.tint} />
-          </Pressable>
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              style={[
+                styles.addButton,
+                { borderColor: colors.tint, opacity: refetchingMeds ? 0.6 : 1 },
+              ]}
+              onPress={refetchMeds}
+              disabled={refetchingMeds}
+            >
+              <Ionicons name="refresh" size={18} color={colors.tint} />
+            </Pressable>
+
+            <Pressable
+              style={[styles.addButton, { borderColor: colors.tint }]}
+              onPress={() => {
+                setEditingMed(null);
+                setMedModalOpen(true);
+              }}
+            >
+              <Ionicons name="add" size={18} color={colors.tint} />
+            </Pressable>
+          </View>
         </View>
 
-        {/* Calendar */}
         <View
           style={[
             styles.calendarCard,
-            {
-              borderColor: colors.tint,
-              backgroundColor: colors.card,
-            },
+            { borderColor: colors.tint, backgroundColor: colors.card },
           ]}
         >
           <View style={styles.monthRow}>
@@ -507,7 +550,6 @@ export default function ScheduleScreen() {
           </View>
         </View>
 
-        {/* Reminder Header */}
         <ThemedText
           style={{
             marginTop: 24,
@@ -521,19 +563,14 @@ export default function ScheduleScreen() {
           REMINDERS FOR {monthLabel} {selectedDate}, {year}
         </ThemedText>
 
-        {/* Reminder Card */}
         <View
           style={[
             styles.reminderCard,
-            {
-              backgroundColor: colors.card,
-              borderColor: colors.border,
-            },
+            { backgroundColor: colors.card, borderColor: colors.border },
           ]}
         >
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={styles.table}>
-              {/* HEADER */}
               <View style={styles.tableHeader}>
                 <ThemedText style={[styles.thEdit, { color: colors.icon }]} />
                 <ThemedText style={[styles.thDel, { color: colors.icon }]} />
@@ -594,7 +631,11 @@ export default function ScheduleScreen() {
                       onPress={() => handleDeleteMedication(m.id)}
                       hitSlop={10}
                     >
-                      <Ionicons name="trash-outline" size={18} color="red" />
+                      <Ionicons
+                        name="trash-outline"
+                        size={18}
+                        color={colors.error}
+                      />
                     </Pressable>
 
                     <ThemedText style={[styles.tdTime, { color: colors.text }]}>
@@ -716,7 +757,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  // HEADER WIDTHS
   thEdit: { width: 50, fontWeight: "700" },
   thDel: { width: 50, fontWeight: "700" },
   thTime: { width: 120, fontWeight: "700" },
@@ -724,7 +764,6 @@ const styles = StyleSheet.create({
   thDose: { width: 120, fontWeight: "700" },
   thNotes: { width: 200, fontWeight: "700" },
 
-  // DATA WIDTHS
   tdEdit: { width: 50, alignItems: "center" },
   tdDel: { width: 50, alignItems: "center" },
   tdTime: { width: 120 },

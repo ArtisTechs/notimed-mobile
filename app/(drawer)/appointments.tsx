@@ -2,6 +2,7 @@
 import AddAppointmentModal, {
   AppointmentPayload,
 } from "@/components/AddAppointmentModal";
+import FullscreenLoader from "@/components/FullscreenLoader";
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
@@ -18,6 +19,12 @@ import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const toYmd = (d: Date) =>
   `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+const normalizeTime = (t?: string) => {
+  if (!t) return "00:00";
+  const [h = "0", m = "0"] = t.split(":");
+  return `${pad2(Number(h))}:${pad2(Number(m))}`;
+};
 
 const formatTime12h = (value?: string) => {
   if (!value) return "—";
@@ -43,6 +50,7 @@ export default function AppointmentScreen() {
 
   const year = currentDate.getFullYear();
   const monthIndex = currentDate.getMonth();
+  const [refetchingAppts, setRefetchingAppts] = React.useState(false);
 
   const monthLabel = useMemo(() => {
     return currentDate.toLocaleString("en-US", { month: "long" }).toUpperCase();
@@ -72,12 +80,16 @@ export default function AppointmentScreen() {
 
   const changeMonth = (direction: number) => {
     const newDate = new Date(year, monthIndex + direction, 1);
+    const newYear = newDate.getFullYear();
+    const newMonth = newDate.getMonth();
+    const maxDay = new Date(newYear, newMonth + 1, 0).getDate();
+
     setCurrentDate(newDate);
-    setSelectedDate(1);
+    setSelectedDate((d) => Math.min(d, maxDay));
   };
 
   // ==========================
-  // USER LOAD (same pattern as dashboard)
+  // USER LOAD
   // ==========================
   const [user, setUser] = React.useState<UserDetailsResponse>({
     id: "",
@@ -89,6 +101,26 @@ export default function AppointmentScreen() {
     inviteCode: "",
     connectedUsers: [],
   });
+
+  const refetchAppts = React.useCallback(async () => {
+    if (!user.id) return;
+
+    setRefetchingAppts(true);
+    try {
+      const list = await appointmentsApi.list(user.id);
+      const ui = list.map(toUiAppointment).sort((a, b) => {
+        const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
+        const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
+        return aKey.localeCompare(bKey);
+      });
+
+      setAppointments(ui);
+    } catch {
+      // keep existing list
+    } finally {
+      setRefetchingAppts(false);
+    }
+  }, [user.id]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -127,7 +159,7 @@ export default function AppointmentScreen() {
   }, []);
 
   // ==========================
-  // APPOINTMENTS (cache + API + CRUD)
+  // APPOINTMENTS (single cache source = appointmentsApi)
   // ==========================
   const [appointments, setAppointments] = React.useState<AppointmentPayload[]>(
     [],
@@ -145,35 +177,27 @@ export default function AppointmentScreen() {
     notes: a.notes ?? undefined,
   });
 
-  const apptsKey = React.useMemo(() => {
-    const uid = user.id || "unknown";
-    return `appointments:${uid}`;
-  }, [user.id]);
-
   React.useEffect(() => {
     let mounted = true;
 
     const loadAppts = async () => {
       if (!user.id) return;
 
-      // 1) cached
+      // 1) cached (service-owned)
       try {
-        const cached = await AsyncStorage.getItem(apptsKey);
-        if (mounted && cached) setAppointments(JSON.parse(cached));
-      } catch {}
-
-      // 2) API
-      try {
-        const list = await appointmentsApi.list(user.id);
-        const ui = list.map(toUiAppointment).sort((a, b) => {
-          const aKey = `${a.appointmentDate} ${a.appointmentTime}`;
-          const bKey = `${b.appointmentDate} ${b.appointmentTime}`;
+        const cached = await appointmentsApi.getCached(user.id);
+        const uiCached = cached.map(toUiAppointment).sort((a, b) => {
+          const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
+          const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
           return aKey.localeCompare(bKey);
         });
 
-        if (!mounted) return;
-        setAppointments(ui);
-        await AsyncStorage.setItem(apptsKey, JSON.stringify(ui));
+        if (mounted) setAppointments(uiCached);
+      } catch {}
+
+      // 2) API (refresh master list + service cache)
+      try {
+        if (mounted) await refetchAppts();
       } catch {
         // keep cached
       }
@@ -183,12 +207,7 @@ export default function AppointmentScreen() {
     return () => {
       mounted = false;
     };
-  }, [user.id, apptsKey]);
-
-  const persistAppts = async (items: AppointmentPayload[]) => {
-    if (!user.id) return;
-    await AsyncStorage.setItem(apptsKey, JSON.stringify(items));
-  };
+  }, [user.id, refetchAppts]);
 
   const handleAddAppointment = async (payload: AppointmentPayload) => {
     if (!user.id) return;
@@ -203,14 +222,13 @@ export default function AppointmentScreen() {
 
     const createdUi = toUiAppointment(created);
 
-    const next = [createdUi, ...appointments].sort((a, b) => {
-      const aKey = `${a.appointmentDate} ${a.appointmentTime}`;
-      const bKey = `${b.appointmentDate} ${b.appointmentTime}`;
-      return aKey.localeCompare(bKey);
-    });
-
-    setAppointments(next);
-    await persistAppts(next);
+    setAppointments((prev) =>
+      [createdUi, ...prev].sort((a, b) => {
+        const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
+        const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
+        return aKey.localeCompare(bKey);
+      }),
+    );
   };
 
   const handleUpdateAppointment = async (payload: AppointmentPayload) => {
@@ -225,25 +243,24 @@ export default function AppointmentScreen() {
 
     const updatedUi = toUiAppointment(updated);
 
-    const next = appointments
-      .map((a) => (a.id === updatedUi.id ? updatedUi : a))
-      .sort((a, b) => {
-        const aKey = `${a.appointmentDate} ${a.appointmentTime}`;
-        const bKey = `${b.appointmentDate} ${b.appointmentTime}`;
-        return aKey.localeCompare(bKey);
-      });
-
-    setAppointments(next);
-    await persistAppts(next);
+    setAppointments((prev) =>
+      prev
+        .map((a) => (a.id === updatedUi.id ? updatedUi : a))
+        .sort((a, b) => {
+          const aKey = `${a.appointmentDate} ${normalizeTime(a.appointmentTime)}`;
+          const bKey = `${b.appointmentDate} ${normalizeTime(b.appointmentTime)}`;
+          return aKey.localeCompare(bKey);
+        }),
+    );
   };
 
   const handleDeleteAppointment = async (id: string) => {
+    if (!user.id) return;
+
     try {
-      await appointmentsApi.delete(id);
+      await appointmentsApi.delete(user.id, id);
     } finally {
-      const next = appointments.filter((a) => a.id !== id);
-      setAppointments(next);
-      await persistAppts(next);
+      setAppointments((prev) => prev.filter((a) => a.id !== id));
     }
   };
 
@@ -258,7 +275,6 @@ export default function AppointmentScreen() {
     const set = new Set<number>();
 
     for (const a of appointments) {
-      // appointmentDate expected: YYYY-MM-DD
       const d = new Date(`${a.appointmentDate}T00:00:00`);
       if (d.getFullYear() === year && d.getMonth() === monthIndex) {
         set.add(d.getDate());
@@ -272,7 +288,11 @@ export default function AppointmentScreen() {
     return appointments
       .filter((a) => a.appointmentDate === selectedYmd)
       .slice()
-      .sort((a, b) => a.appointmentTime.localeCompare(b.appointmentTime));
+      .sort((a, b) =>
+        normalizeTime(a.appointmentTime).localeCompare(
+          normalizeTime(b.appointmentTime),
+        ),
+      );
   }, [appointments, selectedYmd]);
 
   return (
@@ -289,12 +309,18 @@ export default function AppointmentScreen() {
         onSubmit={editingAppt ? handleUpdateAppointment : handleAddAppointment}
       />
 
+      <FullscreenLoader
+        visible={refetchingAppts}
+        text="Refreshing appointments..."
+        colors={colors}
+        fontScale={fontScale}
+      />
+
       <ScrollView
         style={[styles.container, { backgroundColor: colors.background }]}
         contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <View style={styles.headerRow}>
           <View>
             <ThemedText
@@ -319,18 +345,33 @@ export default function AppointmentScreen() {
             </ThemedText>
           </View>
 
-          <Pressable
-            style={[styles.addButton, { borderColor: colors.tint }]}
-            onPress={() => {
-              setEditingAppt(null);
-              setApptModalOpen(true);
-            }}
-          >
-            <Ionicons name="add" size={18} color={colors.tint} />
-          </Pressable>
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              style={[
+                styles.addButton,
+                {
+                  borderColor: colors.tint,
+                  opacity: refetchingAppts ? 0.6 : 1,
+                },
+              ]}
+              onPress={refetchAppts}
+              disabled={refetchingAppts}
+            >
+              <Ionicons name="refresh" size={18} color={colors.tint} />
+            </Pressable>
+
+            <Pressable
+              style={[styles.addButton, { borderColor: colors.tint }]}
+              onPress={() => {
+                setEditingAppt(null);
+                setApptModalOpen(true);
+              }}
+            >
+              <Ionicons name="add" size={18} color={colors.tint} />
+            </Pressable>
+          </View>
         </View>
 
-        {/* Calendar */}
         <View
           style={[
             styles.calendarCard,
@@ -423,7 +464,6 @@ export default function AppointmentScreen() {
           </View>
         </View>
 
-        {/* Header Label */}
         <ThemedText
           style={{
             marginTop: 24,
@@ -437,7 +477,6 @@ export default function AppointmentScreen() {
           APPOINTMENTS FOR {monthLabel} {selectedDate}, {year}
         </ThemedText>
 
-        {/* Table */}
         <View
           style={[
             styles.card,
@@ -503,7 +542,11 @@ export default function AppointmentScreen() {
                       onPress={() => handleDeleteAppointment(a.id)}
                       hitSlop={10}
                     >
-                      <Ionicons name="trash-outline" size={18} color="red" />
+                      <Ionicons
+                        name="trash-outline"
+                        size={18}
+                        color={colors.error}
+                      />
                     </Pressable>
 
                     <ThemedText style={[styles.tdTime, { color: colors.text }]}>
@@ -621,14 +664,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  // HEADER WIDTHS
   thEdit: { width: 50, fontWeight: "700" },
   thDel: { width: 50, fontWeight: "700" },
   thTime: { width: 120, fontWeight: "700" },
   thTitle: { width: 220, fontWeight: "700" },
   thNotes: { width: 250, fontWeight: "700" },
 
-  // DATA WIDTHS
   tdEdit: { width: 50, alignItems: "center" },
   tdDel: { width: 50, alignItems: "center" },
   tdTime: { width: 120 },

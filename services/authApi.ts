@@ -30,7 +30,7 @@ export type UserDetailsResponse = {
 };
 
 export type ConnectInviteRequest = {
-  patientId: string;
+  caregiverId: string;
   inviteCode: string;
 };
 
@@ -51,7 +51,7 @@ export type DisconnectResponse = {
 export type RespondConnectionRequest = {
   patientId: string;
   caregiverId: string;
-  action: "APPROVE" | "REJECT";
+  accept: boolean;
 };
 
 export type ConnectedUserResponse = {

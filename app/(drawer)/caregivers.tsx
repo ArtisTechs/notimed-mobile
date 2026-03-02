@@ -148,7 +148,7 @@ export default function CaregiversScreen() {
         await authApi.respondConnection({
           patientId: me.id,
           caregiverId,
-          action: "APPROVE",
+          accept: true,
         });
 
         // optimistic UI
@@ -171,7 +171,7 @@ export default function CaregiversScreen() {
         await authApi.respondConnection({
           patientId: me.id,
           caregiverId,
-          action: "REJECT",
+          accept: false,
         });
         setRequests((prev) => prev.filter((r) => r.id !== caregiverId));
       } finally {
