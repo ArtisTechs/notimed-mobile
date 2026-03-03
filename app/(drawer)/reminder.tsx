@@ -463,6 +463,22 @@ export default function ReminderScreen() {
           {params.date ?? ""}
         </ThemedText>
 
+        <View
+          style={[
+            styles.typePill,
+            {
+              backgroundColor:
+                resolvedScheme === "dark"
+                  ? "rgba(255,255,255,0.12)"
+                  : "rgba(15,23,42,0.08)",
+            },
+          ]}
+        >
+          <ThemedText style={[styles.typeText, { color: colors.text }]}>
+            {kind === "MEDICATION" ? "Medication" : "Appointment"}
+          </ThemedText>
+        </View>
+
         <ThemedText style={[styles.title, { color: colors.text }]}>
           {title}
         </ThemedText>
@@ -524,14 +540,21 @@ export default function ReminderScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20 },
+  container: {
+    flex: 1,
+    padding: 20,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    paddingTop: 32,
+  },
   loadingContainer: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   card: {
-    flex: 1,
+    width: "100%",
+    maxWidth: 420,
     borderRadius: 28,
     paddingVertical: 40,
     paddingHorizontal: 24,
@@ -555,8 +578,20 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   date: { fontSize: 16, marginTop: 6, opacity: 0.85 },
+  typePill: {
+    marginTop: 18,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  typeText: {
+    fontSize: 13,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
   title: {
-    marginTop: 30,
+    marginTop: 18,
     fontSize: 22,
     fontWeight: "700",
     textAlign: "center",

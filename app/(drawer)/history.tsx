@@ -46,8 +46,21 @@ function mapApiType(type: ApiHistoryType): HistoryItem["type"] {
   return type === "MEDICATION" ? "Medication" : "Appointment";
 }
 
+function formatTime12h(value?: string): string {
+  if (!value) return "";
+
+  const [rawHour, minute = "00"] = value.split(":");
+  const hour = Number(rawHour);
+
+  if (Number.isNaN(hour)) return value;
+
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const normalizedHour = hour % 12 === 0 ? 12 : hour % 12;
+  return `${normalizedHour}:${minute} ${suffix}`;
+}
+
 function buildMessage(h: HistoryResponse): string {
-  const timePart = h.time ? ` at ${h.time}` : "";
+  const timePart = h.time ? ` at ${formatTime12h(h.time)}` : "";
   const notesPart = h.notes ? ` ${h.notes}` : "";
 
   if (h.status === "COMPLETED") return `Completed${timePart}.${notesPart}`.trim();

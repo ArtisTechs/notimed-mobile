@@ -60,6 +60,8 @@ async function ensureNotificationPermission() {
 function routeFromNotificationData(data: any) {
   if (!data?.kind) return false;
 
+  const isReAlarm = String(data.isReAlarm ?? "").toLowerCase() === "true";
+
   // small delay ensures navigation is mounted
   setTimeout(() => {
     if (data.kind === "MEDICATION") {
@@ -75,7 +77,7 @@ function routeFromNotificationData(data: any) {
           notes: data.notes ?? "",
           date: data.date,
           time: data.time,
-          isReAlarm: String(Boolean(data.isReAlarm)),
+          isReAlarm: String(isReAlarm),
           reminderOffsetMinutes: String(data.reminderOffsetMinutes ?? ""),
           reAlarmAfterMinutes: String(data.reAlarmAfterMinutes ?? ""),
         },

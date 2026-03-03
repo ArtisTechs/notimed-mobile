@@ -5,6 +5,7 @@ import { router } from "expo-router";
 export function registerNotificationTapRouting() {
   const sub = Notifications.addNotificationResponseReceivedListener((resp) => {
     const data: any = resp.notification.request.content.data;
+    const isReAlarm = String(data?.isReAlarm ?? "").toLowerCase() === "true";
 
     if (data?.kind === "MEDICATION") {
       router.push({
@@ -19,7 +20,7 @@ export function registerNotificationTapRouting() {
           notes: data.notes ?? "",
           date: data.date,
           time: data.time,
-          isReAlarm: String(Boolean(data.isReAlarm)),
+          isReAlarm: String(isReAlarm),
           reminderOffsetMinutes: String(data.reminderOffsetMinutes ?? ""),
           reAlarmAfterMinutes: String(data.reAlarmAfterMinutes ?? ""),
         },
