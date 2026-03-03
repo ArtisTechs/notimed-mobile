@@ -11,6 +11,7 @@ import { useAppTheme } from "@/context/AppThemeContext";
 import {
   HistoryResponse,
   historyApi,
+  normalizeHistoryItems,
 } from "@/services/historyApi";
 import {
   AppointmentResponse,
@@ -157,18 +158,14 @@ const isMedicationDueOn = (m: MedicationPayload, dateIso: string) => {
   return false;
 };
 
+const isMedicationActive = (m: Pick<MedicationPayload, "status">) =>
+  String(m.status ?? "ongoing").toLowerCase() !== "completed";
+
 const formatHistoryDateTime = (item: HistoryResponse) => {
   const datePart = item.date || "";
   const timePart = item.time ? ` ${formatTime12h(item.time)}` : "";
   return `${datePart}${timePart}`.trim();
 };
-
-const sortHistoryNewest = (items: HistoryResponse[]) =>
-  items.slice().sort((a, b) =>
-    String(b.updatedAt || b.createdAt).localeCompare(
-      String(a.updatedAt || a.createdAt),
-    ),
-  );
 
 export default function CaregiverDashboard() {
   const { resolvedScheme, fontScale } = useAppTheme();
@@ -315,19 +312,22 @@ export default function CaregiverDashboard() {
   const hasPatients = patients.length > 0;
 
   const latestHistory = React.useMemo(() => {
-    return sortHistoryNewest(historyItems).slice(0, 5);
+    return historyItems.slice(0, 5);
   }, [historyItems]);
 
   const notifyHistoryUpdate = React.useCallback(
     async (newItems: HistoryResponse[]) => {
       if (!selectedPatientId || !newItems.length) return;
 
+      const normalizedNewItems = normalizeHistoryItems(newItems);
+      const latestItem = normalizedNewItems[0];
+      if (!latestItem) return;
+
       const patientLabel =
         selectedPatientName && selectedPatientName !== "Select patient"
           ? selectedPatientName
           : "Your patient";
 
-      const latestItem = sortHistoryNewest(newItems)[0];
       const statusVerb =
         latestItem.status === "COMPLETED"
           ? "completed"
@@ -340,11 +340,11 @@ export default function CaregiverDashboard() {
           : `appointment ${latestItem.name}`;
 
       const body =
-        newItems.length === 1
+        normalizedNewItems.length === 1
           ? `${patientLabel} ${statusVerb} ${subject}${
               latestItem.time ? ` at ${formatTime12h(latestItem.time)}` : ""
             }.`
-          : `${patientLabel} has ${newItems.length} new history updates.`;
+          : `${patientLabel} has ${normalizedNewItems.length} new history updates.`;
 
       try {
         await Notifications.scheduleNotificationAsync({
@@ -355,7 +355,7 @@ export default function CaregiverDashboard() {
             data: {
               kind: "CAREGIVER_HISTORY",
               patientId: selectedPatientId,
-              historyIds: newItems.map((item) => item.id),
+              historyIds: normalizedNewItems.map((item) => item.id),
             },
           },
           trigger: {
@@ -428,19 +428,19 @@ export default function CaregiverDashboard() {
       }
 
       const res = await historyApi.list({ userId: selectedPatientId });
-      const sorted = sortHistoryNewest(res);
-      setHistoryItems(sorted);
+      const normalized = normalizeHistoryItems(res);
+      setHistoryItems(normalized);
 
       const seenIds =
         seenHistoryIdsRef.current.get(selectedPatientId) ?? new Set<string>();
-      const newItems = sorted.filter((item) => !seenIds.has(item.id));
+      const newItems = normalized.filter((item) => !seenIds.has(item.id));
       const completedNewItems = newItems.filter(
         (item) => item.status === "COMPLETED",
       );
 
       seenHistoryIdsRef.current.set(
         selectedPatientId,
-        new Set(sorted.map((item) => item.id)),
+        new Set(normalized.map((item) => item.id)),
       );
 
       if (
@@ -487,7 +487,7 @@ export default function CaregiverDashboard() {
 
   const todaysMedications = React.useMemo(() => {
     return medications
-      .filter((m) => isMedicationDueOn(m, todayIso))
+      .filter((m) => isMedicationActive(m) && isMedicationDueOn(m, todayIso))
       .sort((a, b) =>
         normalizeTime(a.schedule.time).localeCompare(
           normalizeTime(b.schedule.time),

@@ -3,6 +3,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
+import {
+  APPOINTMENT_CHANNEL_ID,
+  MEDICATION_CHANNEL_ID,
+} from "@/constants/notifications";
 import { appointmentsApi } from "@/services/appointmentsApi";
 import { androidAlarm } from "@/services/androidAlarm";
 import { medicationsApi } from "@/services/medicationsApi";
@@ -201,7 +205,7 @@ async function scheduleAppointmentAlarm(
       triggerAtMillis: dt.getTime(),
       title: `Appointment: ${a.title}`,
       body: a.notes ?? "Open NotiMed to view details.",
-      channelId: "appointment",
+      channelId: APPOINTMENT_CHANNEL_ID,
       soundName: "appointment.wav",
       data,
     });
@@ -219,7 +223,7 @@ async function scheduleAppointmentAlarm(
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
       date: dt,
-      channelId: "appointment",
+      channelId: APPOINTMENT_CHANNEL_ID,
     },
   });
 
@@ -266,7 +270,7 @@ async function scheduleMedicationAlarm(opts: {
       triggerAtMillis: triggerAt.getTime(),
       title,
       body,
-      channelId: "medication",
+      channelId: MEDICATION_CHANNEL_ID,
       soundName: "medication.wav",
       data,
     });
@@ -284,7 +288,7 @@ async function scheduleMedicationAlarm(opts: {
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
       date: triggerAt,
-      channelId: "medication",
+      channelId: MEDICATION_CHANNEL_ID,
     },
   });
 

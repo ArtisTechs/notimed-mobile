@@ -107,6 +107,9 @@ const isDueOnDate = (m: MedicationPayload, date: Date) => {
   return target.getDate() === start.getDate();
 };
 
+const isMedicationActive = (m: Pick<MedicationPayload, "status">) =>
+  String(m.status ?? "ongoing").toLowerCase() !== "completed";
+
 export default function ScheduleScreen() {
   const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
@@ -449,7 +452,9 @@ export default function ScheduleScreen() {
 
     for (let d = 1; d <= daysInMonth; d++) {
       const date = new Date(year, monthIndex, d);
-      const hasAny = medications.some((m) => isDueOnDate(m, date));
+      const hasAny = medications.some(
+        (m) => isMedicationActive(m) && isDueOnDate(m, date),
+      );
       if (hasAny) set.add(d);
     }
     return set;
@@ -457,7 +462,7 @@ export default function ScheduleScreen() {
 
   const filteredSchedules = useMemo(() => {
     return medications
-      .filter((m) => isDueOnDate(m, selectedDateObj))
+      .filter((m) => isMedicationActive(m) && isDueOnDate(m, selectedDateObj))
       .slice()
       .sort((a, b) =>
         normalizeTime(a.schedule.time).localeCompare(

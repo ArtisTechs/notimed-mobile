@@ -68,7 +68,13 @@ function sortHistoryNewest(items: HistoryResponse[]) {
   });
 }
 
-function dedupeHistory(items: HistoryResponse[]) {
+const HISTORY_STATUS_PRIORITY: Record<HistoryStatus, number> = {
+  MISSED: 0,
+  SKIPPED: 1,
+  COMPLETED: 2,
+};
+
+function dedupeHistoryByRequest(items: HistoryResponse[]) {
   const byKey = new Map<string, HistoryResponse>();
 
   for (const item of sortHistoryNewest(items)) {
@@ -84,6 +90,47 @@ function dedupeHistory(items: HistoryResponse[]) {
   return sortHistoryNewest(Array.from(byKey.values()));
 }
 
+function buildHistorySlotKey(item: HistoryResponse) {
+  return [
+    item.userId,
+    item.type,
+    item.name.trim().toLowerCase(),
+    (item.dose ?? "").trim().toLowerCase(),
+    item.date,
+    item.time ?? "",
+  ].join("|");
+}
+
+function preferHistoryItem(
+  current: HistoryResponse,
+  candidate: HistoryResponse,
+) {
+  const currentPriority = HISTORY_STATUS_PRIORITY[current.status] ?? -1;
+  const candidatePriority = HISTORY_STATUS_PRIORITY[candidate.status] ?? -1;
+
+  if (candidatePriority > currentPriority) return candidate;
+  return current;
+}
+
+export function normalizeHistoryItems(items: HistoryResponse[]) {
+  const uniqueItems = dedupeHistoryByRequest(items);
+  const bySlot = new Map<string, HistoryResponse>();
+
+  for (const item of uniqueItems) {
+    const slotKey = buildHistorySlotKey(item);
+    const current = bySlot.get(slotKey);
+
+    if (!current) {
+      bySlot.set(slotKey, item);
+      continue;
+    }
+
+    bySlot.set(slotKey, preferHistoryItem(current, item));
+  }
+
+  return sortHistoryNewest(Array.from(bySlot.values()));
+}
+
 function matchesFilter(item: HistoryResponse, args: HistoryListArgs) {
   if (args.type && item.type !== args.type) return false;
   if (args.date && item.date !== args.date) return false;
@@ -91,7 +138,7 @@ function matchesFilter(item: HistoryResponse, args: HistoryListArgs) {
 }
 
 function filterHistory(items: HistoryResponse[], args: HistoryListArgs) {
-  return items.filter((item) => matchesFilter(item, args));
+  return normalizeHistoryItems(items).filter((item) => matchesFilter(item, args));
 }
 
 function normalizeRemoteItem(item: HistoryResponse): HistoryResponse {
@@ -148,7 +195,7 @@ async function readCache(userId: string): Promise<HistoryResponse[]> {
 async function writeCache(userId: string, items: HistoryResponse[]) {
   await AsyncStorage.setItem(
     cacheKey(userId),
-    JSON.stringify(dedupeHistory(items)),
+    JSON.stringify(normalizeHistoryItems(items)),
   );
 }
 
@@ -182,7 +229,7 @@ async function getMergedCachedHistory(userId: string) {
   const pendingItems = pending.map(toPendingHistoryItem);
   const persistedItems = cached.filter((item) => !item.pendingSync);
 
-  return dedupeHistory([...pendingItems, ...persistedItems]);
+  return normalizeHistoryItems([...pendingItems, ...persistedItems]);
 }
 
 async function cachePendingRecord(record: PendingHistoryRecord) {
@@ -192,7 +239,7 @@ async function cachePendingRecord(record: PendingHistoryRecord) {
   ]);
   const pendingItem = toPendingHistoryItem(record);
   const nextQueue = [record, ...queue.filter((item) => item.localId !== record.localId)];
-  const nextCache = dedupeHistory([pendingItem, ...cached]);
+  const nextCache = normalizeHistoryItems([pendingItem, ...cached]);
 
   await Promise.all([
     writePendingQueue(nextQueue),
@@ -212,7 +259,7 @@ async function replacePendingWithRemote(
   const nextQueue = queue.filter(
     (item) => item.clientRequestId !== record.clientRequestId,
   );
-  const nextCache = dedupeHistory([
+  const nextCache = normalizeHistoryItems([
     normalizedRemote,
     ...cached.filter(
       (item) =>
@@ -239,7 +286,7 @@ function fetchRemoteHistory(userId: string) {
 
 async function refreshUserCache(userId: string) {
   const remote = await fetchRemoteHistory(userId);
-  const merged = dedupeHistory([
+  const merged = normalizeHistoryItems([
     ...(await readPendingForUser(userId)).map(toPendingHistoryItem),
     ...remote.map(normalizeRemoteItem),
   ]);

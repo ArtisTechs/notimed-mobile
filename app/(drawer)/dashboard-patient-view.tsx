@@ -153,6 +153,9 @@ const isMedicationDueOn = (m: MedicationPayload, dateIso: string) => {
   return false;
 };
 
+const isMedicationActive = (m: Pick<MedicationPayload, "status">) =>
+  String(m.status ?? "ongoing").toLowerCase() !== "completed";
+
 export default function PatientDashboard() {
   const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
@@ -377,7 +380,7 @@ export default function PatientDashboard() {
 
   const todaysMedications = React.useMemo(() => {
     return medications
-      .filter((m) => isMedicationDueOn(m, todayIso))
+      .filter((m) => isMedicationActive(m) && isMedicationDueOn(m, todayIso))
       .sort((a, b) =>
         normalizeTime(a.schedule.time).localeCompare(
           normalizeTime(b.schedule.time),

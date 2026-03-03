@@ -15,7 +15,10 @@ import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import * as Speech from "expo-speech";
 
 import { androidAlarm } from "@/services/androidAlarm";
+import { rescheduleCurrentUserNotifications } from "@/services/alarmScheduler";
+import { appointmentsApi } from "@/services/appointmentsApi";
 import { historyApi, HistoryStatus, HistoryType } from "@/services/historyApi";
+import { medicationsApi } from "@/services/medicationsApi";
 
 type Params = {
   kind?: "MEDICATION" | "APPOINTMENT";
@@ -271,6 +274,46 @@ export default function ReminderScreen() {
     ],
   );
 
+  const syncResolvedItem = React.useCallback(
+    async (nextStatus: HistoryStatus) => {
+      if (nextStatus !== "COMPLETED" && nextStatus !== "SKIPPED") return;
+
+      const userId = String(params.userId ?? "").trim();
+      if (!userId) return;
+
+      if (kind === "MEDICATION") {
+        const medId = String(params.medId ?? "").trim();
+        if (!medId) return;
+
+        let medication = (await medicationsApi.getCached(userId)).find(
+          (item) => String(item.id) === medId,
+        );
+
+        if (!medication) {
+          try {
+            medication = await medicationsApi.getById(medId);
+          } catch {}
+        }
+
+        const repeatType = String(medication?.repeat?.type ?? "").toLowerCase();
+        if (repeatType !== "once") return;
+
+        await medicationsApi.updateStatus(medId, "COMPLETED");
+        await rescheduleCurrentUserNotifications();
+        return;
+      }
+
+      if (kind === "APPOINTMENT") {
+        const apptId = String(params.apptId ?? "").trim();
+        if (!apptId) return;
+
+        await appointmentsApi.delete(userId, apptId);
+        await rescheduleCurrentUserNotifications();
+      }
+    },
+    [kind, params.apptId, params.medId, params.userId],
+  );
+
   const buildMedicationAlarmId = React.useCallback(
     (suffix: "main" | `re:${number}`) => {
       const medId = String(params.medId ?? "").trim();
@@ -320,6 +363,10 @@ export default function ReminderScreen() {
         await postHistory(nextStatus);
       } catch {}
 
+      try {
+        await syncResolvedItem(nextStatus);
+      } catch {}
+
       setSaving(false);
       await navigateToDashboard();
     },
@@ -332,6 +379,7 @@ export default function ReminderScreen() {
       params.alarmId,
       postHistory,
       reAlarmAfterMinutes,
+      syncResolvedItem,
       stopAllAudio,
     ],
   );

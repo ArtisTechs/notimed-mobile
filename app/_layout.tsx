@@ -17,6 +17,10 @@ import { Alert, AppState, Platform } from "react-native";
 import { androidAlarm } from "@/services/androidAlarm";
 import { AppThemeProvider, useAppTheme } from "@/context/AppThemeContext";
 import { AppViewProvider } from "@/context/AppViewContext";
+import {
+  APPOINTMENT_CHANNEL_ID,
+  MEDICATION_CHANNEL_ID,
+} from "@/constants/notifications";
 import { rescheduleCurrentUserNotifications } from "@/services/alarmScheduler";
 import { historyApi } from "@/services/historyApi";
 
@@ -32,7 +36,7 @@ Notifications.setNotificationHandler({
 async function initAndroidNotificationChannels() {
   if (Platform.OS !== "android") return;
 
-  await Notifications.setNotificationChannelAsync("medication", {
+  await Notifications.setNotificationChannelAsync(MEDICATION_CHANNEL_ID, {
     name: "Medication Reminders",
     importance: Notifications.AndroidImportance.MAX,
     sound: "medication.wav",
@@ -40,7 +44,7 @@ async function initAndroidNotificationChannels() {
     lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
   });
 
-  await Notifications.setNotificationChannelAsync("appointment", {
+  await Notifications.setNotificationChannelAsync(APPOINTMENT_CHANNEL_ID, {
     name: "Appointment Reminders",
     importance: Notifications.AndroidImportance.MAX,
     sound: "appointment.wav",
