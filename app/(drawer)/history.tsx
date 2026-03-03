@@ -34,6 +34,39 @@ interface HistoryItem {
   message: string;
   lastDate?: string;
   date: string;
+  pendingSync?: boolean;
+}
+
+function mapApiStatus(status: ApiHistoryStatus): HistoryStatus {
+  if (status === "COMPLETED") return "onTime";
+  return "missed"; // SKIPPED / MISSED
+}
+
+function mapApiType(type: ApiHistoryType): HistoryItem["type"] {
+  return type === "MEDICATION" ? "Medication" : "Appointment";
+}
+
+function buildMessage(h: HistoryResponse): string {
+  const timePart = h.time ? ` at ${h.time}` : "";
+  const notesPart = h.notes ? ` ${h.notes}` : "";
+
+  if (h.status === "COMPLETED") return `Completed${timePart}.${notesPart}`.trim();
+  if (h.status === "SKIPPED") return `Skipped${timePart}.${notesPart}`.trim();
+  return `Missed${timePart}.${notesPart}`.trim();
+}
+
+function mapApiItem(h: HistoryResponse): HistoryItem {
+  const doseSuffix = h.type === "MEDICATION" && h.dose ? ` (${h.dose})` : "";
+
+  return {
+    id: h.id,
+    title: `${h.name}${doseSuffix}`,
+    type: mapApiType(h.type),
+    status: mapApiStatus(h.status),
+    message: buildMessage(h),
+    date: h.date,
+    pendingSync: Boolean(h.pendingSync),
+  };
 }
 
 export default function HistoryScreen() {
@@ -156,39 +189,10 @@ export default function HistoryScreen() {
 
   const formatISODate = (date: Date) => date.toISOString().split("T")[0];
 
-  const mapApiStatus = (status: ApiHistoryStatus): HistoryStatus => {
-    if (status === "COMPLETED") return "onTime";
-    return "missed"; // SKIPPED / MISSED
-  };
-
-  const mapApiType = (type: ApiHistoryType): HistoryItem["type"] =>
-    type === "MEDICATION" ? "Medication" : "Appointment";
-
-  const buildMessage = (h: HistoryResponse): string => {
-    const timePart = h.time ? ` at ${h.time}` : "";
-    const notesPart = h.notes ? ` ${h.notes}` : "";
-
-    if (h.status === "COMPLETED")
-      return `Completed${timePart}.${notesPart}`.trim();
-    if (h.status === "SKIPPED") return `Skipped${timePart}.${notesPart}`.trim();
-    return `Missed${timePart}.${notesPart}`.trim();
-  };
-
-  const mapApiItem = (h: HistoryResponse): HistoryItem => {
-    const doseSuffix = h.type === "MEDICATION" && h.dose ? ` (${h.dose})` : "";
-    return {
-      id: h.id,
-      title: `${h.name}${doseSuffix}`,
-      type: mapApiType(h.type),
-      status: mapApiStatus(h.status),
-      message: buildMessage(h),
-      date: h.date,
-    };
-  };
-
   const loadHistory = useCallback(
     async (opts?: { asRefetch?: boolean }) => {
       const asRefetch = opts?.asRefetch ?? false;
+      let cachedItems: HistoryResponse[] = [];
 
       if (asRefetch) setRefetching(true);
       else setLoading(true);
@@ -202,11 +206,21 @@ export default function HistoryScreen() {
         }
 
         const date = formatISODate(selectedDate);
+        cachedItems = await historyApi.getCached({ userId: targetUserId, date });
+
+        if (cachedItems.length > 0) {
+          setItems(cachedItems.map(mapApiItem));
+        }
+
         const res = await historyApi.list({ userId: targetUserId, date });
         setItems(res.map(mapApiItem));
       } catch (e: any) {
-        setItems([]);
-        setError(e?.message ?? "Failed to load history");
+        setItems(cachedItems.map(mapApiItem));
+        setError(
+          cachedItems.length > 0
+            ? "Showing saved offline history."
+            : (e?.message ?? "Failed to load history"),
+        );
       } finally {
         if (asRefetch) setRefetching(false);
         else setLoading(false);
@@ -434,6 +448,19 @@ export default function HistoryScreen() {
                   >
                     {item.message}
                   </ThemedText>
+
+                  {item.pendingSync ? (
+                    <ThemedText
+                      style={{
+                        fontSize: 12 * fontScale,
+                        color: colors.icon,
+                        marginTop: 4,
+                        opacity: 0.85,
+                      }}
+                    >
+                      Saved offline. Waiting to sync.
+                    </ThemedText>
+                  ) : null}
 
                   {!!item.lastDate && (
                     <ThemedText

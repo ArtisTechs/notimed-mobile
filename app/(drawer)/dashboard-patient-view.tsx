@@ -807,7 +807,7 @@ export default function PatientDashboard() {
                 </ThemedText>
 
                 <ThemedText style={{ color: colors.icon, marginTop: 4 }}>
-                  Reminder offset: {med.schedule.reminderOffsetMinutes} min
+                  Retry after miss: {med.schedule.reminderOffsetMinutes} min
                 </ThemedText>
 
                 <View style={styles.cardActions}>

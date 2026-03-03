@@ -42,7 +42,7 @@ export function AppThemeProvider({ children }: any) {
 
   const resolvedScheme = themeMode === "auto" ? systemScheme : themeMode;
 
-  const fontScale = textSize === "small" ? 0.9 : textSize === "large" ? 1.2 : 1;
+  const fontScale = textSize === "small" ? 0.7 : textSize === "large" ? 1.2 : 1;
 
   return (
     <AppThemeContext.Provider

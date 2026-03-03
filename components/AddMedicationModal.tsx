@@ -111,6 +111,12 @@ const toInt = (v: string, fallback: number) => {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 };
 
+const combineYmdAndTime = (ymd: string, hhmm: string) => {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const [hh, mm] = hhmm.split(":").map(Number);
+  return new Date(y, (m ?? 1) - 1, d ?? 1, hh ?? 0, mm ?? 0, 0, 0);
+};
+
 const ymdToDate = (ymd: string) => {
   const [y, m, d] = ymd.split("-").map(Number);
   if (!y || !m || !d) return new Date();
@@ -345,6 +351,15 @@ export default function AddMedicationModal({
 
     if (!time.trim()) e.time = "Time is required";
     else if (!isValidTimeHHmm(time)) e.time = "Use HH:mm (e.g. 08:00)";
+
+    if (
+      repeatType === "once" &&
+      isValidYMD(startDate) &&
+      isValidTimeHHmm(time) &&
+      combineYmdAndTime(startDate.trim(), time.trim()).getTime() <= Date.now()
+    ) {
+      e.time = "One-time reminders must be scheduled in the future";
+    }
 
     if (endDate.trim() && !isValidYMD(endDate)) e.endDate = "Use YYYY-MM-DD";
 
@@ -779,7 +794,11 @@ export default function AddMedicationModal({
                 />
               </InputShell>
             </FieldRow>
-            <FieldRow label="Reminder" colors={colors} fontScale={fontScale}>
+            <FieldRow
+              label="Retry Delay"
+              colors={colors}
+              fontScale={fontScale}
+            >
               <InputShell colors={colors} rightIcon={chevron}>
                 <View
                   style={{

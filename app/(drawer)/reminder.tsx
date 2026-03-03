@@ -1,7 +1,8 @@
 // app/(drawer)/reminder.tsx
 import { Ionicons } from "@expo/vector-icons";
-import { router, useLocalSearchParams } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { router, useLocalSearchParams } from "expo-router";
+import * as Notifications from "expo-notifications";
 import React from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -13,6 +14,7 @@ import { useAppTheme } from "@/context/AppThemeContext";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import * as Speech from "expo-speech";
 
+import { androidAlarm } from "@/services/androidAlarm";
 import { historyApi, HistoryStatus, HistoryType } from "@/services/historyApi";
 
 type Params = {
@@ -21,6 +23,7 @@ type Params = {
 
   medId?: string;
   apptId?: string;
+  alarmId?: string;
 
   name?: string;
   dose?: string;
@@ -31,8 +34,9 @@ type Params = {
   date?: string; // prefer YYYY-MM-DD
   time?: string; // HH:mm
 
-  // ADD THIS: reminder offset in minutes (e.g. 10)
   reminderOffsetMinutes?: string; // expo-router params are strings
+  reAlarmAfterMinutes?: string; // expo-router params are strings
+  isReAlarm?: string; // expo-router params are strings
 };
 
 const formatTime12h = (value?: string) => {
@@ -68,11 +72,13 @@ export default function ReminderScreen() {
   const kind = (params.kind ?? "MEDICATION") as HistoryType;
   const [accessChecked, setAccessChecked] = React.useState(false);
   const [hasAccess, setHasAccess] = React.useState(false);
-
-  const offsetMinutes = React.useMemo(() => {
-    const n = Number(params.reminderOffsetMinutes);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  }, [params.reminderOffsetMinutes]);
+  const isReAlarm = String(params.isReAlarm ?? "").toLowerCase() === "true";
+  const reAlarmAfterMinutes = React.useMemo(() => {
+    const n = Number(
+      params.reAlarmAfterMinutes ?? params.reminderOffsetMinutes ?? 0,
+    );
+    return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  }, [params.reAlarmAfterMinutes, params.reminderOffsetMinutes]);
 
   const alarmSource =
     kind === "MEDICATION"
@@ -89,6 +95,10 @@ export default function ReminderScreen() {
 
   const subtitle =
     kind === "MEDICATION" ? (params.dose ?? "") : (params.notes ?? "");
+  const hasMedicationRetry =
+    kind === "MEDICATION" && reAlarmAfterMinutes > 0;
+  const showSecondChanceNotice =
+    hasMedicationRetry && !isReAlarm;
 
   const spokenText =
     kind === "MEDICATION"
@@ -99,25 +109,22 @@ export default function ReminderScreen() {
   const stopRef = React.useRef(false);
   const [saving, setSaving] = React.useState(false);
 
-  // timers for auto-stop/re-alarm
-  const stopTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const restartTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
+  // timer for auto-resolving unattended reminders
+  const autoResolveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const cycleRunningRef = React.useRef(false);
+  const alarmActiveRef = React.useRef(false);
+  const resolvedRef = React.useRef(false);
 
   const clearTimers = React.useCallback(() => {
-    if (stopTimerRef.current) {
-      clearTimeout(stopTimerRef.current);
-      stopTimerRef.current = null;
-    }
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
+    if (autoResolveTimerRef.current) {
+      clearTimeout(autoResolveTimerRef.current);
+      autoResolveTimerRef.current = null;
     }
   }, []);
 
   const stopAlarmOnly = React.useCallback(() => {
+    alarmActiveRef.current = false;
     stopRef.current = true;
     speakingRef.current = false;
     Speech.stop();
@@ -161,6 +168,7 @@ export default function ReminderScreen() {
   }, [spokenText]);
 
   const startAlarmOnly = React.useCallback(() => {
+    alarmActiveRef.current = true;
     stopRef.current = false;
 
     // voice loop
@@ -176,43 +184,26 @@ export default function ReminderScreen() {
     } catch {}
   }, [player, startSpeakingLoop]);
 
-  // 3 min ring, then stop. re-alarm after offsetMinutes from the original ring start time.
-  const startAlarmCycle = React.useCallback(() => {
-    if (cycleRunningRef.current) return;
-    cycleRunningRef.current = true;
-
-    const RING_MS = 3 * 60 * 1000;
-    const OFFSET_MS = offsetMinutes * 60 * 1000;
-
-    const runOnce = () => {
-      if (!cycleRunningRef.current) return;
-
-      startAlarmOnly();
-
-      // stop at +3min
-      stopTimerRef.current = setTimeout(() => {
-        stopAlarmOnly();
-
-        // no re-alarm configured
-        if (OFFSET_MS <= 0) return;
-
-        // re-alarm at +offsetMinutes (e.g. 10 min) -> wait offset - 3
-        const waitMs = Math.max(0, OFFSET_MS - RING_MS);
-        restartTimerRef.current = setTimeout(() => {
-          runOnce();
-        }, waitMs);
-      }, RING_MS);
-    };
-
-    clearTimers();
-    runOnce();
-  }, [offsetMinutes, startAlarmOnly, stopAlarmOnly, clearTimers]);
-
   const stopAllAudio = React.useCallback(() => {
-    cycleRunningRef.current = false;
     clearTimers();
     stopAlarmOnly();
   }, [clearTimers, stopAlarmOnly]);
+
+  const navigateToDashboard = React.useCallback(async () => {
+    const role = await AsyncStorage.getItem("userRole");
+
+    if (role === "caregiver") {
+      router.replace("/(drawer)/dashboard-caregiver-view");
+      return;
+    }
+
+    if (role === "patient") {
+      router.replace("/(drawer)/dashboard-patient-view");
+      return;
+    }
+
+    router.replace("/(auth)/get-started");
+  }, []);
 
   React.useEffect(() => {
     let mounted = true;
@@ -245,27 +236,6 @@ export default function ReminderScreen() {
       mounted = false;
     };
   }, []);
-
-  React.useEffect(() => {
-    if (!hasAccess) return;
-    // start cycle immediately when screen opens
-    startAlarmCycle();
-    return () => stopAllAudio();
-  }, [hasAccess, startAlarmCycle, stopAllAudio]);
-
-  React.useEffect(() => {
-    if (!hasAccess) return;
-    // keep sound alive if loaded but not playing (during active ring window)
-    if ((status as any)?.isLoaded === false) return;
-    if ((status as any)?.loading === true) return;
-
-    if (!cycleRunningRef.current) return;
-    if (stopRef.current) return;
-
-    try {
-      if (!(status as any)?.playing) player.play();
-    } catch {}
-  }, [hasAccess, status, player]);
 
   const postHistory = React.useCallback(
     async (status: HistoryStatus) => {
@@ -301,33 +271,148 @@ export default function ReminderScreen() {
     ],
   );
 
+  const buildMedicationAlarmId = React.useCallback(
+    (suffix: "main" | `re:${number}`) => {
+      const medId = String(params.medId ?? "").trim();
+      const dayYmd = String(params.date ?? "").trim();
+      const time = String(params.time ?? "").trim();
+      if (!medId || !dayYmd || !time) return "";
+
+      return `med:${medId}:${dayYmd}:${time}:${suffix}`;
+    },
+    [params.date, params.medId, params.time],
+  );
+
+  const cancelAlarmById = React.useCallback(async (alarmId?: string) => {
+    if (!alarmId) return;
+
+    try {
+      await androidAlarm.cancelAlarm(alarmId);
+    } catch {}
+
+    try {
+      await Notifications.dismissNotificationAsync(alarmId);
+    } catch {}
+
+    try {
+      await Notifications.cancelScheduledNotificationAsync(alarmId);
+    } catch {}
+  }, []);
+
+  const finalizeReminder = React.useCallback(
+    async (nextStatus: HistoryStatus) => {
+      if (resolvedRef.current) return;
+
+      resolvedRef.current = true;
+      setSaving(true);
+      stopAllAudio();
+
+      await cancelAlarmById(params.alarmId);
+
+      if (kind === "MEDICATION" && reAlarmAfterMinutes > 0) {
+        const pairedAlarmId = isReAlarm
+          ? buildMedicationAlarmId("main")
+          : buildMedicationAlarmId(`re:${reAlarmAfterMinutes}`);
+        await cancelAlarmById(pairedAlarmId);
+      }
+
+      try {
+        await postHistory(nextStatus);
+      } catch {}
+
+      setSaving(false);
+      await navigateToDashboard();
+    },
+    [
+      buildMedicationAlarmId,
+      cancelAlarmById,
+      isReAlarm,
+      kind,
+      navigateToDashboard,
+      params.alarmId,
+      postHistory,
+      reAlarmAfterMinutes,
+      stopAllAudio,
+    ],
+  );
+
+  const handleUnattendedAlarm = React.useCallback(async () => {
+    const shouldMarkMissed =
+      kind === "APPOINTMENT" || !hasMedicationRetry || isReAlarm;
+
+    if (shouldMarkMissed) {
+      await finalizeReminder("MISSED");
+      return;
+    }
+
+    // First unattended medication alarm only dismisses the current ring.
+    // The history entry becomes MISSED only if the retry alarm is also unattended.
+    resolvedRef.current = true;
+    stopAllAudio();
+    await cancelAlarmById(params.alarmId);
+    await navigateToDashboard();
+  }, [
+    cancelAlarmById,
+    finalizeReminder,
+    hasMedicationRetry,
+    isReAlarm,
+    kind,
+    navigateToDashboard,
+    params.alarmId,
+    stopAllAudio,
+  ]);
+
+  const startAlarmSession = React.useCallback(() => {
+    if (resolvedRef.current) return;
+
+    const RING_MS = 3 * 60 * 1000;
+
+    clearTimers();
+    startAlarmOnly();
+
+    autoResolveTimerRef.current = setTimeout(() => {
+      void handleUnattendedAlarm();
+    }, RING_MS);
+  }, [clearTimers, handleUnattendedAlarm, startAlarmOnly]);
+
+  React.useEffect(() => {
+    if (!hasAccess) return;
+    startAlarmSession();
+    return () => stopAllAudio();
+  }, [hasAccess, startAlarmSession, stopAllAudio]);
+
+  React.useEffect(() => {
+    if (!hasAccess) return;
+    // keep sound alive if loaded but not playing during the active reminder window
+    if ((status as any)?.isLoaded === false) return;
+    if ((status as any)?.loading === true) return;
+
+    if (!alarmActiveRef.current) return;
+    if (stopRef.current) return;
+
+    try {
+      if (!(status as any)?.playing) player.play();
+    } catch {}
+  }, [hasAccess, status, player]);
+
   const handleTaken = async () => {
     if (saving) return;
-    setSaving(true);
-    stopAllAudio();
-    try {
-      await postHistory("COMPLETED");
-    } catch {}
-    setSaving(false);
-    router.back();
+    await finalizeReminder("COMPLETED");
   };
 
   const handleSkipped = async () => {
     if (saving) return;
-    setSaving(true);
-    stopAllAudio();
-    try {
-      await postHistory("SKIPPED");
-    } catch {}
-    setSaving(false);
-    router.back();
+    await finalizeReminder("SKIPPED");
   };
 
   if (!accessChecked) {
     return (
       <SafeAreaView
         edges={["top", "bottom"]}
-        style={[styles.loadingContainer, { backgroundColor: colors.background }]}
+        style={[
+          styles.loadingContainer,
+          { backgroundColor: colors.background },
+        ]}
       >
         <ActivityIndicator size="large" color={colors.tint} />
       </SafeAreaView>
@@ -388,6 +473,14 @@ export default function ReminderScreen() {
           </ThemedText>
         ) : null}
 
+        {showSecondChanceNotice ? (
+          <ThemedText style={[styles.helperText, { color: colors.icon }]}>
+            If this medication alarm is unanswered, NotiMed will ring again
+            after {reAlarmAfterMinutes} minutes and only mark it missed if that
+            retry is also unanswered.
+          </ThemedText>
+        ) : null}
+
         <View style={styles.buttonRow}>
           <Pressable
             style={[
@@ -418,7 +511,7 @@ export default function ReminderScreen() {
 
         <Pressable
           style={[styles.stopRow, { borderColor: colors.border }]}
-          onPress={stopAllAudio}
+          onPress={stopAlarmOnly}
         >
           <Ionicons name="volume-mute-outline" size={18} color={colors.icon} />
           <ThemedText style={{ color: colors.icon, fontWeight: "600" }}>
@@ -469,6 +562,13 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   subtitle: { marginTop: 6, fontSize: 18, textAlign: "center" },
+  helperText: {
+    marginTop: 10,
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 18,
+    maxWidth: 320,
+  },
   buttonRow: { flexDirection: "row", gap: 16, marginTop: 32 },
   button: {
     flexDirection: "row",
