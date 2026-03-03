@@ -3,6 +3,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useState } from "react";
 import {
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -63,6 +64,7 @@ export default function AuthScreen() {
   });
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<any>({});
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
 
   React.useEffect(() => {
     let timer: any;
@@ -71,6 +73,25 @@ export default function AuthScreen() {
     }
     return () => clearTimeout(timer);
   }, [otpStep, forgotPasswordStep, countdown]);
+
+  React.useEffect(() => {
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const showSubscription = Keyboard.addListener(showEvent, () =>
+      setKeyboardVisible(true),
+    );
+    const hideSubscription = Keyboard.addListener(hideEvent, () =>
+      setKeyboardVisible(false),
+    );
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   const showToast = (
     message: string,
@@ -170,7 +191,12 @@ export default function AuthScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <ScrollView
-          contentContainerStyle={styles.screen}
+          contentContainerStyle={[
+            styles.scrollContent,
+            keyboardVisible
+              ? styles.scrollContentKeyboardOpen
+              : styles.scrollContentCentered,
+          ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
@@ -1262,10 +1288,22 @@ export default function AuthScreen() {
 
 const styles = StyleSheet.create({
   screen: {
-    flexGrow: 1,
-    justifyContent: "center",
+    flex: 1,
     alignItems: "center",
     padding: 2,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingTop: 24,
+    paddingBottom: 32,
+  },
+  scrollContentCentered: {
+    justifyContent: "center",
+  },
+  scrollContentKeyboardOpen: {
+    justifyContent: "flex-start",
   },
   card: {
     width: "100%",
