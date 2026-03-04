@@ -46,8 +46,8 @@
         "expo-notifications",
         {
           "sounds": [
-            "./assets/sounds/medication.wav",
-            "./assets/sounds/appointment.wav"
+            "./assets/sounds/medication_v2.wav",
+            "./assets/sounds/appointment.mp3"
           ]
         }
       ]

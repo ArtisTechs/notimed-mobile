@@ -11,11 +11,30 @@ import { appointmentsApi } from "@/services/appointmentsApi";
 import { androidAlarm } from "@/services/androidAlarm";
 import { medicationsApi } from "@/services/medicationsApi";
 
-const SCHEDULED_IDS_KEY = "scheduledNotificationIds:v1";
+const SCHEDULED_ALARMS_KEY = "scheduledAlarmEntries:v2";
+const LEGACY_SCHEDULED_IDS_KEY = "scheduledNotificationIds:v1";
 let scheduleQueue: Promise<void> = Promise.resolve();
+
+type ScheduledAlarmEntry = {
+  alarmId: string;
+  notificationId: string;
+};
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
+}
+
+function normalizeYmdInput(value: unknown) {
+  const raw = String(value ?? "").trim();
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(raw);
+  return match?.[1] ?? "";
+}
+
+function normalizeTimeInput(value: unknown) {
+  const raw = String(value ?? "").trim();
+  const match = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/.exec(raw);
+  if (!match) return "";
+  return `${match[1]}:${match[2]}`;
 }
 
 function toYmd(d: Date) {
@@ -23,14 +42,28 @@ function toYmd(d: Date) {
 }
 
 function parseHHmm(time: string) {
-  const [h, m] = time.split(":");
+  const normalized = normalizeTimeInput(time);
+  if (!normalized) {
+    return null;
+  }
+
+  const [h, m] = normalized.split(":");
   return { h: Number(h), m: Number(m ?? "0") };
 }
 
 function atLocalDateTime(ymd: string, hhmm: string) {
-  const [y, mo, da] = ymd.split("-").map(Number);
-  const { h, m } = parseHHmm(hhmm);
-  return new Date(y, (mo ?? 1) - 1, da ?? 1, h, m, 0, 0);
+  const normalizedYmd = normalizeYmdInput(ymd);
+  if (!normalizedYmd) return null;
+
+  const [y, mo, da] = normalizedYmd.split("-").map(Number);
+  const timeParts = parseHHmm(hhmm);
+  if (!timeParts) return null;
+
+  const { h, m } = timeParts;
+  if (![y, mo, da, h, m].every(Number.isFinite)) return null;
+
+  const next = new Date(y, (mo ?? 1) - 1, da ?? 1, h, m, 0, 0);
+  return Number.isNaN(next.getTime()) ? null : next;
 }
 
 function addDays(d: Date, days: number) {
@@ -40,8 +73,12 @@ function addDays(d: Date, days: number) {
 }
 
 function parseYmd(ymd: string) {
-  const [y, mo, da] = String(ymd).split("-").map(Number);
-  return new Date(y, (mo ?? 1) - 1, da ?? 1);
+  const normalized = normalizeYmdInput(ymd);
+  if (!normalized) return null;
+
+  const [y, mo, da] = normalized.split("-").map(Number);
+  const next = new Date(y, (mo ?? 1) - 1, da ?? 1);
+  return Number.isNaN(next.getTime()) ? null : next;
 }
 
 function startOfLocalDay(d: Date) {
@@ -70,26 +107,39 @@ function weekdayCode(d: Date) {
 }
 
 async function cancelPreviouslyScheduled() {
-  try {
-    const raw = await AsyncStorage.getItem(SCHEDULED_IDS_KEY);
-    const ids: string[] = raw ? JSON.parse(raw) : [];
+  const entries = await readScheduledAlarmEntries();
 
+  try {
     await Promise.all(
-      ids.map(async (id) => {
+      entries.map(async ({ alarmId, notificationId }) => {
         try {
-          await Notifications.cancelScheduledNotificationAsync(id);
+          await Notifications.dismissNotificationAsync(notificationId);
         } catch {}
+
+        try {
+          await Notifications.cancelScheduledNotificationAsync(notificationId);
+        } catch {}
+
+        if (notificationId !== alarmId) {
+          try {
+            await Notifications.dismissNotificationAsync(alarmId);
+          } catch {}
+
+          try {
+            await Notifications.cancelScheduledNotificationAsync(alarmId);
+          } catch {}
+        }
 
         if (Platform.OS === "android" && androidAlarm.isAvailable) {
           try {
-            await androidAlarm.cancelAlarm(id);
+            await androidAlarm.cancelAlarm(alarmId);
           } catch {}
         }
       }),
     );
   } catch {}
 
-  await AsyncStorage.removeItem(SCHEDULED_IDS_KEY);
+  await AsyncStorage.multiRemove([SCHEDULED_ALARMS_KEY, LEGACY_SCHEDULED_IDS_KEY]);
 }
 
 export async function clearScheduledNotifications() {
@@ -120,7 +170,7 @@ function toIdPart(value: unknown) {
 }
 
 function buildAppointmentAlarmId(a: any) {
-  return `appt:${toIdPart(a?.id)}:${toIdPart(a?.appointmentDate)}:${toIdPart(a?.appointmentTime)}`;
+  return `appt:${toIdPart(a?.id)}:${toIdPart(normalizeYmdInput(a?.appointmentDate))}:${toIdPart(normalizeTimeInput(a?.appointmentTime))}`;
 }
 
 function buildMedicationAlarmId(
@@ -130,21 +180,24 @@ function buildMedicationAlarmId(
   reAlarmAfterMinutes = 0,
 ) {
   const suffix = isReAlarm ? `re:${reAlarmAfterMinutes}` : "main";
-  return `med:${toIdPart(m?.id)}:${toIdPart(dayYmd)}:${toIdPart(m?.schedule?.time)}:${suffix}`;
+  return `med:${toIdPart(m?.id)}:${toIdPart(normalizeYmdInput(dayYmd))}:${toIdPart(normalizeTimeInput(m?.schedule?.time))}:${suffix}`;
 }
 
 function matchesMedicationOnDay(m: any, day: Date) {
-  const startDate = String(m?.startDate ?? "").trim();
+  const startDate = normalizeYmdInput(m?.startDate);
   if (!startDate) return false;
 
   const start = parseYmd(startDate);
+  if (!start) return false;
   const target = startOfLocalDay(day);
 
   if (target < startOfLocalDay(start)) return false;
 
-  const endDate = String(m?.repeat?.endDate ?? "").trim();
+  const endDate = normalizeYmdInput(m?.repeat?.endDate);
   if (endDate) {
-    const end = startOfLocalDay(parseYmd(endDate));
+    const parsedEnd = parseYmd(endDate);
+    if (!parsedEnd) return false;
+    const end = startOfLocalDay(parsedEnd);
     if (target > end) return false;
   }
 
@@ -181,21 +234,129 @@ function matchesMedicationOnDay(m: any, day: Date) {
   return false;
 }
 
+function normalizeScheduledAlarmEntry(value: unknown): ScheduledAlarmEntry | null {
+  if (!value || typeof value !== "object") return null;
+
+  const record = value as Record<string, unknown>;
+  const alarmId = String(record.alarmId ?? "").trim();
+  const notificationId = String(
+    record.notificationId ?? record.alarmId ?? "",
+  ).trim();
+
+  if (!alarmId || !notificationId) return null;
+  return { alarmId, notificationId };
+}
+
+async function readScheduledAlarmEntries(): Promise<ScheduledAlarmEntry[]> {
+  try {
+    const entries = await AsyncStorage.multiGet([
+      SCHEDULED_ALARMS_KEY,
+      LEGACY_SCHEDULED_IDS_KEY,
+    ]);
+    const values = Object.fromEntries(entries);
+
+    const rawCurrent = values[SCHEDULED_ALARMS_KEY];
+    if (rawCurrent) {
+      const parsed = JSON.parse(rawCurrent);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map(normalizeScheduledAlarmEntry)
+          .filter((entry): entry is ScheduledAlarmEntry => !!entry);
+      }
+    }
+
+    const rawLegacy = values[LEGACY_SCHEDULED_IDS_KEY];
+    if (!rawLegacy) return [];
+
+    const parsedLegacy = JSON.parse(rawLegacy);
+    if (!Array.isArray(parsedLegacy)) return [];
+
+    return parsedLegacy
+      .map((value) => {
+        const id = String(value ?? "").trim();
+        return id ? { alarmId: id, notificationId: id } : null;
+      })
+      .filter((entry): entry is ScheduledAlarmEntry => !!entry);
+  } catch {
+    return [];
+  }
+}
+
+async function writeScheduledAlarmEntries(entries: ScheduledAlarmEntry[]) {
+  await AsyncStorage.setItem(SCHEDULED_ALARMS_KEY, JSON.stringify(entries));
+  await AsyncStorage.removeItem(LEGACY_SCHEDULED_IDS_KEY);
+}
+
+async function removeScheduledAlarmEntries(alarmIds: string[]) {
+  if (alarmIds.length === 0) return;
+
+  const ids = new Set(alarmIds.map((value) => String(value).trim()).filter(Boolean));
+  const entries = await readScheduledAlarmEntries();
+  await writeScheduledAlarmEntries(
+    entries.filter(
+      (entry) =>
+        !ids.has(entry.alarmId) &&
+        !ids.has(entry.notificationId),
+    ),
+  );
+}
+
+export async function cancelScheduledAlarmById(alarmId: string) {
+  const normalizedAlarmId = String(alarmId ?? "").trim();
+  if (!normalizedAlarmId) return;
+
+  const entries = await readScheduledAlarmEntries();
+  const matches = entries.filter(
+    (entry) =>
+      entry.alarmId === normalizedAlarmId ||
+      entry.notificationId === normalizedAlarmId,
+  );
+
+  const notificationIds = new Set<string>(
+    matches.length > 0
+      ? matches.flatMap((entry) => [entry.alarmId, entry.notificationId])
+      : [normalizedAlarmId],
+  );
+
+  if (Platform.OS === "android" && androidAlarm.isAvailable) {
+    try {
+      await androidAlarm.cancelAlarm(normalizedAlarmId);
+    } catch {}
+  }
+
+  for (const notificationId of notificationIds) {
+    try {
+      await Notifications.dismissNotificationAsync(notificationId);
+    } catch {}
+
+    try {
+      await Notifications.cancelScheduledNotificationAsync(notificationId);
+    } catch {}
+  }
+
+  await removeScheduledAlarmEntries([
+    normalizedAlarmId,
+    ...matches.flatMap((entry) => [entry.alarmId, entry.notificationId]),
+  ]);
+}
+
 async function scheduleAppointmentAlarm(
   a: any,
   dt: Date,
   useNativeAndroidAlarm: boolean,
-  ids: string[],
+  entries: ScheduledAlarmEntry[],
 ) {
   const alarmId = buildAppointmentAlarmId(a);
+  const appointmentDate = normalizeYmdInput(a?.appointmentDate);
+  const appointmentTime = normalizeTimeInput(a?.appointmentTime);
   const data = {
     kind: "APPOINTMENT",
     userId: a.userId,
     apptId: a.id,
     title: a.title,
     notes: a.notes ?? "",
-    date: a.appointmentDate,
-    time: a.appointmentTime,
+    date: appointmentDate,
+    time: appointmentTime,
     alarmId,
   };
 
@@ -206,10 +367,10 @@ async function scheduleAppointmentAlarm(
       title: `Appointment: ${a.title}`,
       body: a.notes ?? "Open NotiMed to view details.",
       channelId: APPOINTMENT_CHANNEL_ID,
-      soundName: "appointment.wav",
+      soundName: "appointment.mp3",
       data,
     });
-    ids.push(alarmId);
+    entries.push({ alarmId, notificationId: alarmId });
     return;
   }
 
@@ -217,7 +378,7 @@ async function scheduleAppointmentAlarm(
     content: {
       title: `Appointment: ${a.title}`,
       body: a.notes ?? "Tap to view details.",
-      sound: "appointment.wav",
+      sound: "appointment.mp3",
       data,
     },
     trigger: {
@@ -227,7 +388,7 @@ async function scheduleAppointmentAlarm(
     },
   });
 
-  ids.push(id);
+  entries.push({ alarmId, notificationId: id });
 }
 
 async function scheduleMedicationAlarm(opts: {
@@ -237,7 +398,7 @@ async function scheduleMedicationAlarm(opts: {
   isReAlarm: boolean;
   reAlarmAfterMinutes: number;
   useNativeAndroidAlarm: boolean;
-  ids: string[];
+  entries: ScheduledAlarmEntry[];
 }) {
   const { medication: m, dayYmd, triggerAt, isReAlarm, reAlarmAfterMinutes } =
     opts;
@@ -247,6 +408,8 @@ async function scheduleMedicationAlarm(opts: {
     isReAlarm,
     reAlarmAfterMinutes,
   );
+  const normalizedDayYmd = normalizeYmdInput(dayYmd);
+  const normalizedTime = normalizeTimeInput(m?.schedule?.time);
   const body = `${m.dose}${m.notes ? ` - ${m.notes}` : ""}`;
   const title = isReAlarm ? `Take ${m.name} (Re-alarm)` : `Take ${m.name}`;
   const data = {
@@ -256,8 +419,8 @@ async function scheduleMedicationAlarm(opts: {
     name: m.name,
     dose: m.dose,
     notes: m.notes ?? "",
-    date: dayYmd,
-    time: m.schedule.time,
+    date: normalizedDayYmd,
+    time: normalizedTime,
     isReAlarm,
     reminderOffsetMinutes: m.schedule?.reminderOffsetMinutes ?? 0,
     reAlarmAfterMinutes,
@@ -271,10 +434,10 @@ async function scheduleMedicationAlarm(opts: {
       title,
       body,
       channelId: MEDICATION_CHANNEL_ID,
-      soundName: "medication.wav",
+      soundName: "medication_v2.wav",
       data,
     });
-    opts.ids.push(alarmId);
+    opts.entries.push({ alarmId, notificationId: alarmId });
     return;
   }
 
@@ -282,7 +445,7 @@ async function scheduleMedicationAlarm(opts: {
     content: {
       title,
       body,
-      sound: "medication.wav",
+      sound: "medication_v2.wav",
       data,
     },
     trigger: {
@@ -292,7 +455,7 @@ async function scheduleMedicationAlarm(opts: {
     },
   });
 
-  opts.ids.push(id);
+  opts.entries.push({ alarmId, notificationId: id });
 }
 
 async function rescheduleAllFromCacheInternal(opts: {
@@ -316,60 +479,71 @@ async function rescheduleAllFromCacheInternal(opts: {
 
   await cancelPreviouslyScheduled();
 
-  const ids: string[] = [];
+  const entries: ScheduledAlarmEntry[] = [];
 
   for (const a of opts.appointments ?? []) {
-    const dt = atLocalDateTime(a.appointmentDate, a.appointmentTime);
-    if (dt.getTime() <= Date.now() + 1000) continue;
-    if (dt.getTime() > end.getTime()) continue;
+    try {
+      const dt = atLocalDateTime(a?.appointmentDate, a?.appointmentTime);
+      if (!dt) continue;
+      if (dt.getTime() <= Date.now() + 1000) continue;
+      if (dt.getTime() > end.getTime()) continue;
 
-    await scheduleAppointmentAlarm(a, dt, useNativeAndroidAlarm, ids);
+      await scheduleAppointmentAlarm(a, dt, useNativeAndroidAlarm, entries);
+    } catch {}
   }
 
   for (const m of opts.medications ?? []) {
-    if (!isOngoingMedication(m.status)) continue;
+    if (!isOngoingMedication(m?.status)) continue;
 
-    for (let i = 0; i <= horizonDays; i++) {
-      const day = addDays(startOfLocalDay(now), i);
-      const dayYmd = toYmd(day);
-      if (!matchesMedicationOnDay(m, day)) continue;
+    try {
+      if (!normalizeTimeInput(m?.schedule?.time)) {
+        continue;
+      }
 
-      const scheduledAt = atLocalDateTime(dayYmd, m.schedule.time);
-      if (scheduledAt.getTime() > Date.now() + 1000 && scheduledAt <= end) {
+      for (let i = 0; i <= horizonDays; i++) {
+        const day = addDays(startOfLocalDay(now), i);
+        const dayYmd = toYmd(day);
+        if (!matchesMedicationOnDay(m, day)) continue;
+
+        const scheduledAt = atLocalDateTime(dayYmd, m.schedule.time);
+        if (!scheduledAt) continue;
+
+        if (scheduledAt.getTime() > Date.now() + 1000 && scheduledAt <= end) {
+          await scheduleMedicationAlarm({
+            medication: m,
+            dayYmd,
+            triggerAt: scheduledAt,
+            isReAlarm: false,
+            reAlarmAfterMinutes: 0,
+            useNativeAndroidAlarm,
+            entries,
+          });
+        }
+
+        const reAlarmAfterMinutes = getReAlarmAfterMinutes(m);
+        if (reAlarmAfterMinutes <= 0) continue;
+
+        const reAlarmAt = new Date(
+          scheduledAt.getTime() + reAlarmAfterMinutes * 60000,
+        );
+
+        if (reAlarmAt.getTime() <= Date.now() + 1000) continue;
+        if (reAlarmAt.getTime() > end.getTime()) continue;
+
         await scheduleMedicationAlarm({
           medication: m,
           dayYmd,
-          triggerAt: scheduledAt,
-          isReAlarm: false,
-          reAlarmAfterMinutes: 0,
+          triggerAt: reAlarmAt,
+          isReAlarm: true,
+          reAlarmAfterMinutes,
           useNativeAndroidAlarm,
-          ids,
+          entries,
         });
       }
-
-      const reAlarmAfterMinutes = getReAlarmAfterMinutes(m);
-      if (reAlarmAfterMinutes <= 0) continue;
-
-      const reAlarmAt = new Date(
-        scheduledAt.getTime() + reAlarmAfterMinutes * 60000,
-      );
-
-      if (reAlarmAt.getTime() <= Date.now() + 1000) continue;
-      if (reAlarmAt.getTime() > end.getTime()) continue;
-
-      await scheduleMedicationAlarm({
-        medication: m,
-        dayYmd,
-        triggerAt: reAlarmAt,
-        isReAlarm: true,
-        reAlarmAfterMinutes,
-        useNativeAndroidAlarm,
-        ids,
-      });
-    }
+    } catch {}
   }
 
-  await AsyncStorage.setItem(SCHEDULED_IDS_KEY, JSON.stringify(ids));
+  await writeScheduledAlarmEntries(entries);
 }
 
 function enqueueSchedule(task: () => Promise<void>) {
@@ -399,10 +573,26 @@ export function rescheduleCurrentUserNotifications(horizonDays = 14) {
       return;
     }
 
-    const [medications, appointments] = await Promise.all([
+    let [medications, appointments] = await Promise.all([
       medicationsApi.getCached(userId),
       appointmentsApi.getCached(userId),
     ]);
+
+    const shouldRefreshFromApi =
+      shouldScheduleForPatientOnly(userRole) &&
+      medications.length === 0 &&
+      appointments.length === 0;
+
+    if (shouldRefreshFromApi) {
+      try {
+        [medications, appointments] = await Promise.all([
+          medicationsApi.listByUser(userId),
+          appointmentsApi.list(userId),
+        ]);
+      } catch {
+        // Fall back to cache if the first live refresh fails.
+      }
+    }
 
     await rescheduleAllFromCacheInternal({
       medications,

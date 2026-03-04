@@ -2,7 +2,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router, useLocalSearchParams } from "expo-router";
-import * as Notifications from "expo-notifications";
 import React from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -14,8 +13,10 @@ import { useAppTheme } from "@/context/AppThemeContext";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import * as Speech from "expo-speech";
 
-import { androidAlarm } from "@/services/androidAlarm";
-import { rescheduleCurrentUserNotifications } from "@/services/alarmScheduler";
+import {
+  cancelScheduledAlarmById,
+  rescheduleCurrentUserNotifications,
+} from "@/services/alarmScheduler";
 import { appointmentsApi } from "@/services/appointmentsApi";
 import { historyApi, HistoryStatus, HistoryType } from "@/services/historyApi";
 import { medicationsApi } from "@/services/medicationsApi";
@@ -67,6 +68,9 @@ const toIsoDate = (value?: string) => {
   return `${y}-${m}-${day}`;
 };
 
+const toAlarmIdPart = (value: unknown) =>
+  String(value ?? "").trim().replace(/[^a-zA-Z0-9:_-]/g, "_") || "na";
+
 export default function ReminderScreen() {
   const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
@@ -85,8 +89,8 @@ export default function ReminderScreen() {
 
   const alarmSource =
     kind === "MEDICATION"
-      ? require("../../assets/sounds/medication.wav")
-      : require("../../assets/sounds/appointment.wav");
+      ? require("../../assets/sounds/medication_v2.wav")
+      : require("../../assets/sounds/appointment.mp3");
 
   const player = useAudioPlayer(alarmSource, { updateInterval: 500 });
   const status = useAudioPlayerStatus(player);
@@ -110,6 +114,7 @@ export default function ReminderScreen() {
 
   const speakingRef = React.useRef(false);
   const stopRef = React.useRef(false);
+  const mountedRef = React.useRef(true);
   const [saving, setSaving] = React.useState(false);
 
   // timer for auto-resolving unattended reminders
@@ -209,6 +214,8 @@ export default function ReminderScreen() {
   }, []);
 
   React.useEffect(() => {
+    mountedRef.current = true;
+
     let mounted = true;
 
     const ensurePatientAccess = async () => {
@@ -236,6 +243,7 @@ export default function ReminderScreen() {
     ensurePatientAccess();
 
     return () => {
+      mountedRef.current = false;
       mounted = false;
     };
   }, []);
@@ -321,7 +329,7 @@ export default function ReminderScreen() {
       const time = String(params.time ?? "").trim();
       if (!medId || !dayYmd || !time) return "";
 
-      return `med:${medId}:${dayYmd}:${time}:${suffix}`;
+      return `med:${toAlarmIdPart(medId)}:${toAlarmIdPart(dayYmd)}:${toAlarmIdPart(time)}:${suffix}`;
     },
     [params.date, params.medId, params.time],
   );
@@ -330,15 +338,7 @@ export default function ReminderScreen() {
     if (!alarmId) return;
 
     try {
-      await androidAlarm.cancelAlarm(alarmId);
-    } catch {}
-
-    try {
-      await Notifications.dismissNotificationAsync(alarmId);
-    } catch {}
-
-    try {
-      await Notifications.cancelScheduledNotificationAsync(alarmId);
+      await cancelScheduledAlarmById(alarmId);
     } catch {}
   }, []);
 
@@ -367,7 +367,9 @@ export default function ReminderScreen() {
         await syncResolvedItem(nextStatus);
       } catch {}
 
-      setSaving(false);
+      if (mountedRef.current) {
+        setSaving(false);
+      }
       await navigateToDashboard();
     },
     [

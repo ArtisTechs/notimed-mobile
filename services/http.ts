@@ -1,5 +1,6 @@
 export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://192.168.0.229:8080";
+  process.env.EXPO_PUBLIC_API_BASE_URL ??
+  "https://notimed-backend-production.up.railway.app";
 // Use your LAN IP for real device, e.g. http://192.168.x.x:8080
 export type ApiErrorShape = {
   error?: string;

@@ -11,9 +11,13 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
 } from "react-native";
 
@@ -57,6 +61,10 @@ export default function PatientsScreen() {
   const [connected, setConnected] = useState<PatientRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [inviteCodeInput, setInviteCodeInput] = useState("");
+  const [connectLoading, setConnectLoading] = useState(false);
+  const [connectError, setConnectError] = useState("");
 
   const loadConnected = useCallback(async () => {
     setLoading(true);
@@ -228,80 +236,268 @@ export default function PatientsScreen() {
     removeAccess,
   ]);
 
+  const handleConnect = useCallback(async () => {
+    const code = inviteCodeInput.trim().toUpperCase();
+    if (!code) {
+      setConnectError("Invite code is required.");
+      return;
+    }
+
+    setConnectError("");
+    setConnectLoading(true);
+    try {
+      const caregiverId = await getStoredUserId();
+      if (!caregiverId) {
+        setConnectError("Missing caregiver id. Please login again.");
+        return;
+      }
+
+      await authApi.connect({
+        caregiverId,
+        inviteCode: code,
+      });
+
+      setInviteCodeInput("");
+      setConnectModalOpen(false);
+      await loadConnected();
+    } catch (e: any) {
+      const msg =
+        e?.message ||
+        e?.error ||
+        "Unable to connect. Check invite code and try again.";
+      setConnectError(String(msg));
+    } finally {
+      setConnectLoading(false);
+    }
+  }, [inviteCodeInput, loadConnected]);
+
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={{ padding: 20 }}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.headerRow}>
-        <ThemedText
-          style={{
-            fontSize: 20 * fontScale,
-            fontWeight: "700",
-            color: colors.text,
-          }}
-        >
-          {title}
-        </ThemedText>
-
-        <ThemedText
-          style={{
-            marginTop: 4,
-            fontSize: 13 * fontScale,
-            color: colors.icon,
-            letterSpacing: 0.5,
-          }}
-        >
-          {subtitle}
-        </ThemedText>
-      </View>
-
-      <Pressable
-        style={[styles.connectButton, { backgroundColor: colors.tint }]}
-        onPress={() => {
-          // open connect modal / navigate
+    <>
+      <Modal
+        visible={connectModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!connectLoading) {
+            setConnectModalOpen(false);
+            setConnectError("");
+          }
         }}
       >
-        <Ionicons name="person-add-outline" size={18} color="#fff" />
-        <ThemedText
-          style={{
-            color: "#fff",
-            fontWeight: "600",
-            fontSize: 14 * fontScale,
-            marginLeft: 8,
+        <View style={styles.modalBackdrop}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            style={{ width: "100%", paddingHorizontal: 18 }}
+          >
+            <View
+              style={[
+                styles.modalCard,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <View style={styles.modalHeaderRow}>
+                <ThemedText
+                  style={{
+                    fontSize: 18 * fontScale,
+                    fontWeight: "700",
+                    color: colors.text,
+                  }}
+                >
+                  Connect to Patient
+                </ThemedText>
+
+                <Pressable
+                  onPress={() => {
+                    if (connectLoading) return;
+                    setConnectModalOpen(false);
+                    setConnectError("");
+                  }}
+                  hitSlop={10}
+                >
+                  <Ionicons name="close" size={20} color={colors.icon} />
+                </Pressable>
+              </View>
+
+              <ThemedText
+                style={{
+                  marginTop: 6,
+                  fontSize: 13 * fontScale,
+                  color: colors.icon,
+                }}
+              >
+                Enter the patient invite code.
+              </ThemedText>
+
+              <View
+                style={[
+                  styles.inputBox,
+                  {
+                    backgroundColor: colors.inputBackground,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                <Ionicons name="key-outline" size={18} color={colors.icon} />
+                <TextInput
+                  value={inviteCodeInput}
+                  onChangeText={(text) => setInviteCodeInput(text)}
+                  placeholder="e.g. NTM-4821"
+                  placeholderTextColor={colors.icon}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  editable={!connectLoading}
+                  style={[
+                    styles.input,
+                    { color: colors.text, fontSize: 14 * fontScale },
+                  ]}
+                />
+              </View>
+
+              {!!connectError && (
+                <ThemedText
+                  style={{
+                    marginTop: 10,
+                    color: "red",
+                    fontSize: 12 * fontScale,
+                  }}
+                >
+                  {connectError}
+                </ThemedText>
+              )}
+
+              <View style={styles.modalActionsRow}>
+                <Pressable
+                  style={[
+                    styles.modalButton,
+                    {
+                      backgroundColor: colors.inputBackground,
+                      borderColor: colors.border,
+                    },
+                  ]}
+                  onPress={() => {
+                    if (connectLoading) return;
+                    setConnectModalOpen(false);
+                    setConnectError("");
+                  }}
+                >
+                  <ThemedText
+                    style={{
+                      color: colors.text,
+                      fontWeight: "600",
+                      fontSize: 13 * fontScale,
+                    }}
+                  >
+                    Cancel
+                  </ThemedText>
+                </Pressable>
+
+                <Pressable
+                  style={[
+                    styles.modalButton,
+                    { backgroundColor: colors.tint, borderColor: colors.tint },
+                  ]}
+                  onPress={handleConnect}
+                >
+                  {connectLoading ? (
+                    <ActivityIndicator color={colors.buttonText} />
+                  ) : (
+                    <ThemedText
+                      style={{
+                        color: colors.buttonText,
+                        fontWeight: "700",
+                        fontSize: 13 * fontScale,
+                      }}
+                    >
+                      Connect
+                    </ThemedText>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.background }]}
+        contentContainerStyle={{ padding: 20 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.headerRow}>
+          <ThemedText
+            style={{
+              fontSize: 20 * fontScale,
+              fontWeight: "700",
+              color: colors.text,
+            }}
+          >
+            {title}
+          </ThemedText>
+
+          <ThemedText
+            style={{
+              marginTop: 4,
+              fontSize: 13 * fontScale,
+              color: colors.icon,
+              letterSpacing: 0.5,
+            }}
+          >
+            {subtitle}
+          </ThemedText>
+        </View>
+
+        <Pressable
+          style={[styles.connectButton, { backgroundColor: colors.tint }]}
+          onPress={() => {
+            setInviteCodeInput("");
+            setConnectError("");
+            setConnectModalOpen(true);
           }}
         >
-          Connect
-        </ThemedText>
-      </Pressable>
+          <Ionicons
+            name="person-add-outline"
+            size={18}
+            color={colors.buttonText}
+          />
+          <ThemedText
+            style={{
+              color: colors.buttonText,
+              fontWeight: "600",
+              fontSize: 14 * fontScale,
+              marginLeft: 8,
+            }}
+          >
+            Connect to Patient
+          </ThemedText>
+        </Pressable>
 
-      <Pressable
-        style={[styles.refreshButton, { borderColor: colors.border }]}
-        onPress={loadConnected}
-        disabled={loading}
-      >
-        <Ionicons name="refresh-outline" size={16} color={colors.icon} />
-        <ThemedText
-          style={{
-            marginLeft: 8,
-            color: colors.icon,
-            fontSize: 13 * fontScale,
-          }}
+        <Pressable
+          style={[styles.refreshButton, { borderColor: colors.border }]}
+          onPress={loadConnected}
+          disabled={loading}
         >
-          Refresh
-        </ThemedText>
-      </Pressable>
+          <Ionicons name="refresh-outline" size={16} color={colors.icon} />
+          <ThemedText
+            style={{
+              marginLeft: 8,
+              color: colors.icon,
+              fontSize: 13 * fontScale,
+            }}
+          >
+            Refresh
+          </ThemedText>
+        </Pressable>
 
-      <View
-        style={[
-          styles.card,
-          { borderColor: colors.tint, backgroundColor: colors.card },
-        ]}
-      >
-        {renderConnected}
-      </View>
-    </ScrollView>
+        <View
+          style={[
+            styles.card,
+            { borderColor: colors.tint, backgroundColor: colors.card },
+          ]}
+        >
+          {renderConnected}
+        </View>
+      </ScrollView>
+    </>
   );
 }
 
@@ -364,5 +560,55 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 30,
+  },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  modalCard: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+  },
+
+  modalHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  inputBox: {
+    marginTop: 14,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  input: {
+    flex: 1,
+    paddingVertical: 0,
+  },
+
+  modalActionsRow: {
+    marginTop: 16,
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  modalButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

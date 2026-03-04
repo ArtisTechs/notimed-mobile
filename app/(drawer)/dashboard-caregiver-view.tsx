@@ -6,6 +6,7 @@ import AddMedicationModal, {
   MedicationPayload,
 } from "@/components/AddMedicationModal";
 import { ThemedText } from "@/components/themed-text";
+import { APPOINTMENT_CHANNEL_ID } from "@/constants/notifications";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
 import {
@@ -351,7 +352,7 @@ export default function CaregiverDashboard() {
           content: {
             title: `${patientLabel} update`,
             body,
-            sound: "appointment.wav",
+            sound: "appointment.mp3",
             data: {
               kind: "CAREGIVER_HISTORY",
               patientId: selectedPatientId,
@@ -359,7 +360,7 @@ export default function CaregiverDashboard() {
             },
           },
           trigger: {
-            channelId: "appointment",
+            channelId: APPOINTMENT_CHANNEL_ID,
           },
         });
       } catch {}

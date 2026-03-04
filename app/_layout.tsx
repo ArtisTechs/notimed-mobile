@@ -12,7 +12,7 @@ import "react-native-reanimated";
 import type { NotificationBehavior } from "expo-notifications";
 import * as Notifications from "expo-notifications";
 import React from "react";
-import { Alert, AppState, Platform } from "react-native";
+import { Alert, AppState, Linking, Platform } from "react-native";
 
 import { androidAlarm } from "@/services/androidAlarm";
 import { AppThemeProvider, useAppTheme } from "@/context/AppThemeContext";
@@ -39,7 +39,7 @@ async function initAndroidNotificationChannels() {
   await Notifications.setNotificationChannelAsync(MEDICATION_CHANNEL_ID, {
     name: "Medication Reminders",
     importance: Notifications.AndroidImportance.MAX,
-    sound: "medication.wav",
+    sound: "medication_v2.wav",
     vibrationPattern: [0, 250, 250, 250],
     lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
   });
@@ -47,7 +47,7 @@ async function initAndroidNotificationChannels() {
   await Notifications.setNotificationChannelAsync(APPOINTMENT_CHANNEL_ID, {
     name: "Appointment Reminders",
     importance: Notifications.AndroidImportance.MAX,
-    sound: "appointment.wav",
+    sound: "appointment.mp3",
     vibrationPattern: [0, 250, 250, 250],
     lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
   });
@@ -59,6 +59,26 @@ async function ensureNotificationPermission() {
 
   const req = await Notifications.requestPermissionsAsync();
   return req.granted;
+}
+
+function promptNotificationSettings() {
+  Alert.alert(
+    "Allow notifications",
+    "NotiMed needs notification access so medication and appointment reminders can appear when they are due.",
+    [
+      { text: "Not now", style: "cancel" },
+      {
+        text: "Open settings",
+        onPress: () => {
+          void Linking.openSettings();
+        },
+      },
+    ],
+  );
+}
+
+function isPatientRole(role?: string | null) {
+  return String(role ?? "").trim().toLowerCase() === "patient";
 }
 
 function routeFromNotificationData(data: any) {
@@ -134,6 +154,7 @@ function Navigation() {
     let isMounted = true;
     let exactAlarmPrompted = false;
     let fullScreenPrompted = false;
+    let notificationPrompted = false;
     let lastAlarmKey = "";
     let lastAlarmAt = 0;
 
@@ -182,7 +203,7 @@ function Navigation() {
       if (Platform.OS !== "android" || !androidAlarm.isAvailable) return;
 
       const role = await AsyncStorage.getItem("userRole");
-      if (role !== "patient") return;
+      if (!isPatientRole(role)) return;
 
       const exactAlarmAllowed = await androidAlarm.canScheduleExactAlarms();
       if (!exactAlarmAllowed && !exactAlarmPrompted) {
@@ -246,7 +267,11 @@ function Navigation() {
       await initAndroidNotificationChannels();
 
       const granted = await ensureNotificationPermission();
-      if (!granted || !isMounted) return;
+      if (!granted && !notificationPrompted) {
+        notificationPrompted = true;
+        promptNotificationSettings();
+      }
+      if (!isMounted) return;
 
       await ensureAndroidAlarmAccess();
       await syncPendingHistory();

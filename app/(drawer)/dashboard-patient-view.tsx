@@ -910,6 +910,8 @@ export default function PatientDashboard() {
                       flexDirection: "row",
                       alignItems: "center",
                       gap: 8,
+                      flex: 1,
+                      marginRight: 12,
                     }}
                   >
                     <Ionicons
@@ -923,6 +925,7 @@ export default function PatientDashboard() {
                         fontWeight: "700",
                         fontSize: 16 * fontScale,
                         textTransform: "capitalize",
+                        flexShrink: 1,
                       }}
                     >
                       {app.title}
@@ -940,17 +943,32 @@ export default function PatientDashboard() {
                       size={14}
                       color={colors.icon}
                     />
-                    <ThemedText style={{ color: colors.text }}>
+                    <ThemedText
+                      style={{ color: colors.text, fontSize: 12 * fontScale }}
+                    >
                       {formatTime12h(app.appointmentTime)}
                     </ThemedText>
                   </View>
                 </View>
 
-                <ThemedText style={{ color: colors.icon, marginTop: 8 }}>
+                <ThemedText
+                  style={{
+                    color: colors.icon,
+                    marginTop: 8,
+                    fontSize: 13 * fontScale,
+                  }}
+                >
                   {app.appointmentDate}
                 </ThemedText>
 
-                <ThemedText style={{ color: colors.icon, marginTop: 4 }}>
+                <ThemedText
+                  style={{
+                    color: colors.icon,
+                    marginTop: 4,
+                    fontSize: 13 * fontScale,
+                    lineHeight: 18 * fontScale,
+                  }}
+                >
                   {app.notes || "—"}
                 </ThemedText>
 
@@ -999,7 +1017,13 @@ export default function PatientDashboard() {
                 },
               ]}
             >
-              <ThemedText style={{ color: colors.icon }}>
+              <ThemedText
+                style={{
+                  color: colors.icon,
+                  fontSize: 13 * fontScale,
+                  textAlign: "center",
+                }}
+              >
                 No upcoming appointments.
               </ThemedText>
             </View>
