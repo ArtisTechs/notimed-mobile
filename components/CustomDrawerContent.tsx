@@ -131,6 +131,18 @@ export default function CustomDrawerContent(props: any) {
         fontScale={fontScale}
       />
 
+      {!isCaregiver && (
+        <MenuItem
+          icon="alarm-outline"
+          label="Reminder"
+          routeName="reminder"
+          activeRoute={activeRoute}
+          onPress={() => router.replace("/reminder")}
+          colors={colors}
+          fontScale={fontScale}
+        />
+      )}
+
       <MenuItem
         icon="time-outline"
         label={isCaregiver ? "Patient History" : "View History"}

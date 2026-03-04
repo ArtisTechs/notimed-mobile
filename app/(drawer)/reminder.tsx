@@ -1,18 +1,6 @@
-// app/(drawer)/reminder.tsx
-import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { router, useLocalSearchParams } from "expo-router";
-import React from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useAppTheme } from "@/context/AppThemeContext";
-
-import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
-import * as Speech from "expo-speech";
-
 import {
   cancelScheduledAlarmById,
   rescheduleCurrentUserNotifications,
@@ -20,31 +8,43 @@ import {
 import { appointmentsApi } from "@/services/appointmentsApi";
 import { historyApi, HistoryStatus, HistoryType } from "@/services/historyApi";
 import { medicationsApi } from "@/services/medicationsApi";
+import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import * as Speech from "expo-speech";
+import React from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 type Params = {
   kind?: "MEDICATION" | "APPOINTMENT";
   userId?: string;
-
   medId?: string;
   apptId?: string;
   alarmId?: string;
-
   name?: string;
   dose?: string;
-
   title?: string;
   notes?: string;
-
-  date?: string; // prefer YYYY-MM-DD
-  time?: string; // HH:mm
-
-  reminderOffsetMinutes?: string; // expo-router params are strings
-  reAlarmAfterMinutes?: string; // expo-router params are strings
-  isReAlarm?: string; // expo-router params are strings
+  date?: string;
+  time?: string;
+  reminderOffsetMinutes?: string;
+  reAlarmAfterMinutes?: string;
+  isReAlarm?: string;
 };
 
+const ACTIVE_REMINDER_WINDOW_MS = 3 * 60 * 1000;
+
+const pad2 = (value: number) => String(value).padStart(2, "0");
+
 const formatTime12h = (value?: string) => {
-  if (!value) return "—";
+  if (!value) return "--";
   const [hhRaw, mmRaw] = value.split(":");
   const hh = Number(hhRaw);
   const mm = mmRaw ?? "00";
@@ -55,37 +55,240 @@ const formatTime12h = (value?: string) => {
   return `${h12}:${mm} ${period}`;
 };
 
+const normalizeTime = (value?: string) => {
+  const raw = String(value ?? "").trim();
+  const match = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/.exec(raw);
+  if (!match) return "";
+  return `${match[1]}:${match[2]}`;
+};
+
+const toYmd = (value: Date) =>
+  `${value.getFullYear()}-${pad2(value.getMonth() + 1)}-${pad2(value.getDate())}`;
+
 const toIsoDate = (value?: string) => {
   if (!value) return "";
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
 
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return toYmd(date);
+};
 
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+const parseYmd = (value?: string) => {
+  const normalized = toIsoDate(value);
+  if (!normalized) return null;
+
+  const [year, month, day] = normalized.split("-").map(Number);
+  const next = new Date(year, (month ?? 1) - 1, day ?? 1, 0, 0, 0, 0);
+  return Number.isNaN(next.getTime()) ? null : next;
+};
+
+const atLocalDateTime = (ymd?: string, hhmm?: string) => {
+  const normalizedDate = toIsoDate(ymd);
+  const normalizedTime = normalizeTime(hhmm);
+  if (!normalizedDate || !normalizedTime) return null;
+
+  const [year, month, day] = normalizedDate.split("-").map(Number);
+  const [hours, minutes] = normalizedTime.split(":").map(Number);
+  const next = new Date(
+    year,
+    (month ?? 1) - 1,
+    day ?? 1,
+    hours ?? 0,
+    minutes ?? 0,
+    0,
+    0,
+  );
+
+  return Number.isNaN(next.getTime()) ? null : next;
+};
+
+const startOfLocalDay = (value: Date) =>
+  new Date(value.getFullYear(), value.getMonth(), value.getDate());
+
+const daysBetween = (a: Date, b: Date) =>
+  Math.floor(
+    (startOfLocalDay(b).getTime() - startOfLocalDay(a).getTime()) / 86400000,
+  );
+
+const weeksBetween = (a: Date, b: Date) => Math.floor(daysBetween(a, b) / 7);
+
+const monthsBetween = (a: Date, b: Date) =>
+  (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+
+const weekdayCode = (value: Date) => {
+  const map = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"] as const;
+  return map[value.getDay()];
+};
+
+const matchesMedicationOnDay = (medication: any, day: Date) => {
+  const startDate = toIsoDate(medication?.startDate);
+  if (!startDate) return false;
+
+  const start = parseYmd(startDate);
+  if (!start) return false;
+  const target = startOfLocalDay(day);
+
+  if (target < startOfLocalDay(start)) return false;
+
+  const endDate = toIsoDate(medication?.repeat?.endDate);
+  if (endDate) {
+    const parsedEnd = parseYmd(endDate);
+    if (!parsedEnd) return false;
+    if (target > startOfLocalDay(parsedEnd)) return false;
+  }
+
+  const type = String(medication?.repeat?.type ?? "once").toLowerCase();
+  const interval = Math.max(1, Number(medication?.repeat?.interval ?? 1));
+  const unit = String(
+    medication?.repeat?.unit ?? (type === "monthly" ? "month" : "day"),
+  ).toLowerCase();
+  const daysOfWeek = Array.isArray(medication?.repeat?.daysOfWeek)
+    ? medication.repeat.daysOfWeek
+    : [];
+
+  if (type === "once") return toYmd(target) === startDate;
+
+  if (type === "daily" || (type === "custom" && unit === "day")) {
+    const diff = daysBetween(start, target);
+    return diff >= 0 && diff % interval === 0;
+  }
+
+  if (type === "weekly" || (type === "custom" && unit === "week")) {
+    const diffWeeks = weeksBetween(start, target);
+    if (diffWeeks < 0 || diffWeeks % interval !== 0) return false;
+    if (daysOfWeek.length === 0) return true;
+    return daysOfWeek.includes(weekdayCode(target));
+  }
+
+  if (type === "monthly" || (type === "custom" && unit === "month")) {
+    const diffMonths = monthsBetween(start, target);
+    if (diffMonths < 0 || diffMonths % interval !== 0) return false;
+    return target.getDate() === start.getDate();
+  }
+
+  return false;
 };
 
 const toAlarmIdPart = (value: unknown) =>
   String(value ?? "").trim().replace(/[^a-zA-Z0-9:_-]/g, "_") || "na";
 
+const buildAppointmentAlarmId = (apptId?: string, date?: string, time?: string) =>
+  `appt:${toAlarmIdPart(apptId)}:${toAlarmIdPart(toIsoDate(date))}:${toAlarmIdPart(normalizeTime(time))}`;
+
+const buildMedicationAlarmId = (
+  medId?: string,
+  date?: string,
+  time?: string,
+  suffix: "main" | `re:${number}` = "main",
+) =>
+  `med:${toAlarmIdPart(medId)}:${toAlarmIdPart(toIsoDate(date))}:${toAlarmIdPart(normalizeTime(time))}:${suffix}`;
+
+const getReAlarmAfterMinutes = (medication: any) => {
+  const raw =
+    medication?.schedule?.reAlarmAfterMinutes ??
+    medication?.schedule?.realarmAfterMinutes ??
+    medication?.schedule?.reminderOffsetMinutes ??
+    0;
+
+  const next = Number(raw);
+  return Number.isFinite(next) ? Math.max(0, Math.floor(next)) : 0;
+};
+
+const buildHistorySlotKey = (
+  kind: HistoryType,
+  name: string,
+  dose: string,
+  date: string,
+  time: string,
+) =>
+  [
+    kind,
+    name.trim().toLowerCase(),
+    dose.trim().toLowerCase(),
+    date,
+    time,
+  ].join("|");
+
+const normalizeRouteReminder = (params: Params): Params | null => {
+  const hasReminderPayload = Boolean(
+    params.alarmId ||
+      params.medId ||
+      params.apptId ||
+      (params.kind && params.date && params.time),
+  );
+
+  if (!hasReminderPayload) return null;
+
+  return {
+    kind: params.kind === "APPOINTMENT" ? "APPOINTMENT" : "MEDICATION",
+    userId: String(params.userId ?? "").trim(),
+    medId: String(params.medId ?? "").trim(),
+    apptId: String(params.apptId ?? "").trim(),
+    alarmId: String(params.alarmId ?? "").trim(),
+    name: String(params.name ?? "").trim(),
+    dose: String(params.dose ?? "").trim(),
+    title: String(params.title ?? "").trim(),
+    notes: String(params.notes ?? "").trim(),
+    date: toIsoDate(String(params.date ?? "")),
+    time: normalizeTime(String(params.time ?? "")),
+    reminderOffsetMinutes: String(params.reminderOffsetMinutes ?? "").trim(),
+    reAlarmAfterMinutes: String(params.reAlarmAfterMinutes ?? "").trim(),
+    isReAlarm: String(params.isReAlarm ?? "").trim(),
+  };
+};
+
+const isReminderActiveNow = (scheduledAt: Date, now: Date) => {
+  const delta = now.getTime() - scheduledAt.getTime();
+  return delta >= 0 && delta < ACTIVE_REMINDER_WINDOW_MS;
+};
+
+type ReminderCandidate = {
+  params: Params;
+  triggerAt: number;
+};
+
 export default function ReminderScreen() {
   const { resolvedScheme, fontScale } = useAppTheme();
   const colors = Colors[resolvedScheme];
 
-  const params = useLocalSearchParams<Params>();
-  const kind = (params.kind ?? "MEDICATION") as HistoryType;
+  const routeParams = useLocalSearchParams<Params>();
+  const incomingReminder = React.useMemo(
+    () => normalizeRouteReminder(routeParams),
+    [
+      routeParams.alarmId,
+      routeParams.apptId,
+      routeParams.date,
+      routeParams.dose,
+      routeParams.isReAlarm,
+      routeParams.kind,
+      routeParams.medId,
+      routeParams.name,
+      routeParams.notes,
+      routeParams.reAlarmAfterMinutes,
+      routeParams.reminderOffsetMinutes,
+      routeParams.time,
+      routeParams.title,
+      routeParams.userId,
+    ],
+  );
+
   const [accessChecked, setAccessChecked] = React.useState(false);
   const [hasAccess, setHasAccess] = React.useState(false);
-  const isReAlarm = String(params.isReAlarm ?? "").toLowerCase() === "true";
+  const [resolvedReminder, setResolvedReminder] = React.useState<Params | null>(
+    incomingReminder,
+  );
+  const [loadingReminder, setLoadingReminder] = React.useState(!incomingReminder);
+
+  const reminder = resolvedReminder;
+  const kind = (reminder?.kind ?? "MEDICATION") as HistoryType;
+  const isReAlarm = String(reminder?.isReAlarm ?? "").toLowerCase() === "true";
   const reAlarmAfterMinutes = React.useMemo(() => {
-    const n = Number(
-      params.reAlarmAfterMinutes ?? params.reminderOffsetMinutes ?? 0,
+    const next = Number(
+      reminder?.reAlarmAfterMinutes ?? reminder?.reminderOffsetMinutes ?? 0,
     );
-    return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
-  }, [params.reAlarmAfterMinutes, params.reminderOffsetMinutes]);
+    return Number.isFinite(next) ? Math.max(0, Math.floor(next)) : 0;
+  }, [reminder?.reAlarmAfterMinutes, reminder?.reminderOffsetMinutes]);
 
   const alarmSource =
     kind === "MEDICATION"
@@ -97,27 +300,23 @@ export default function ReminderScreen() {
 
   const title =
     kind === "MEDICATION"
-      ? (params.name ?? "Medicine")
-      : (params.title ?? "Appointment");
-
+      ? (reminder?.name ?? "Medicine")
+      : (reminder?.title ?? "Appointment");
   const subtitle =
-    kind === "MEDICATION" ? (params.dose ?? "") : (params.notes ?? "");
+    kind === "MEDICATION" ? (reminder?.dose ?? "") : (reminder?.notes ?? "");
   const hasMedicationRetry =
     kind === "MEDICATION" && reAlarmAfterMinutes > 0;
-  const showSecondChanceNotice =
-    hasMedicationRetry && !isReAlarm;
+  const showSecondChanceNotice = hasMedicationRetry && !isReAlarm;
 
   const spokenText =
     kind === "MEDICATION"
-      ? `Time to take your medicine. ${params.name ?? ""}. ${params.dose ?? ""}.`
-      : `Appointment reminder. ${params.title ?? ""}.`;
+      ? `Time to take your medicine. ${reminder?.name ?? ""}. ${reminder?.dose ?? ""}.`
+      : `Appointment reminder. ${reminder?.title ?? ""}.`;
 
   const speakingRef = React.useRef(false);
   const stopRef = React.useRef(false);
   const mountedRef = React.useRef(true);
   const [saving, setSaving] = React.useState(false);
-
-  // timer for auto-resolving unattended reminders
   const autoResolveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -156,7 +355,7 @@ export default function ReminderScreen() {
       Speech.speak(spokenText, {
         language: "en",
         rate: 0.95,
-        pitch: 1.0,
+        pitch: 1,
         onDone: () => {
           setTimeout(() => {
             speakOnce();
@@ -179,10 +378,8 @@ export default function ReminderScreen() {
     alarmActiveRef.current = true;
     stopRef.current = false;
 
-    // voice loop
     startSpeakingLoop();
 
-    // sound loop
     try {
       (player as any).loop = true;
     } catch {}
@@ -215,7 +412,6 @@ export default function ReminderScreen() {
 
   React.useEffect(() => {
     mountedRef.current = true;
-
     let mounted = true;
 
     const ensurePatientAccess = async () => {
@@ -240,7 +436,7 @@ export default function ReminderScreen() {
       }
     };
 
-    ensurePatientAccess();
+    void ensurePatientAccess();
 
     return () => {
       mountedRef.current = false;
@@ -248,11 +444,212 @@ export default function ReminderScreen() {
     };
   }, []);
 
+  const resolveCurrentReminder = React.useCallback(async (): Promise<Params | null> => {
+    const userId = String((await AsyncStorage.getItem("userId")) ?? "").trim();
+    if (!userId) return null;
+
+    const now = new Date();
+    const todayYmd = toYmd(now);
+
+    let [medications, appointments, history] = await Promise.all([
+      medicationsApi.getCached(userId),
+      appointmentsApi.getCached(userId),
+      historyApi.getCached({ userId, date: todayYmd }),
+    ]);
+
+    if (medications.length === 0 && appointments.length === 0) {
+      try {
+        [medications, appointments] = await Promise.all([
+          medicationsApi.listByUser(userId),
+          appointmentsApi.list(userId),
+        ]);
+      } catch {}
+    }
+
+    const completedSlots = new Set(
+      history.map((entry) =>
+        buildHistorySlotKey(
+          entry.type,
+          entry.name,
+          entry.dose ?? "",
+          entry.date,
+          normalizeTime(entry.time ?? ""),
+        ),
+      ),
+    );
+
+    const candidates: ReminderCandidate[] = [];
+
+    for (const appointment of appointments) {
+      const appointmentDate = toIsoDate(appointment?.appointmentDate);
+      const appointmentTime = normalizeTime(appointment?.appointmentTime);
+      if (appointmentDate !== todayYmd || !appointmentTime) continue;
+
+      const slotKey = buildHistorySlotKey(
+        "APPOINTMENT",
+        String(appointment?.title ?? ""),
+        "",
+        appointmentDate,
+        appointmentTime,
+      );
+      if (completedSlots.has(slotKey)) continue;
+
+      const scheduledAt = atLocalDateTime(appointmentDate, appointmentTime);
+      if (!scheduledAt || !isReminderActiveNow(scheduledAt, now)) continue;
+
+      candidates.push({
+        triggerAt: scheduledAt.getTime(),
+        params: {
+          kind: "APPOINTMENT",
+          userId,
+          apptId: String(appointment?.id ?? ""),
+          alarmId: buildAppointmentAlarmId(
+            String(appointment?.id ?? ""),
+            appointmentDate,
+            appointmentTime,
+          ),
+          title: String(appointment?.title ?? ""),
+          notes: String(appointment?.notes ?? ""),
+          date: appointmentDate,
+          time: appointmentTime,
+        },
+      });
+    }
+
+    for (const medication of medications) {
+      const medicationTime = normalizeTime(medication?.schedule?.time);
+      const medicationDate = todayYmd;
+      const medicationStatus = String(medication?.status ?? "").toLowerCase();
+
+      if (medicationStatus !== "ongoing") continue;
+      if (!medicationTime) continue;
+      if (!matchesMedicationOnDay(medication, now)) continue;
+
+      const slotKey = buildHistorySlotKey(
+        "MEDICATION",
+        String(medication?.name ?? ""),
+        String(medication?.dose ?? ""),
+        medicationDate,
+        medicationTime,
+      );
+      if (completedSlots.has(slotKey)) continue;
+
+      const scheduledAt = atLocalDateTime(medicationDate, medicationTime);
+      if (!scheduledAt) continue;
+
+      if (isReminderActiveNow(scheduledAt, now)) {
+        candidates.push({
+          triggerAt: scheduledAt.getTime(),
+          params: {
+            kind: "MEDICATION",
+            userId,
+            medId: String(medication?.id ?? ""),
+            alarmId: buildMedicationAlarmId(
+              String(medication?.id ?? ""),
+              medicationDate,
+              medicationTime,
+              "main",
+            ),
+            name: String(medication?.name ?? ""),
+            dose: String(medication?.dose ?? ""),
+            notes: String(medication?.notes ?? ""),
+            date: medicationDate,
+            time: medicationTime,
+            isReAlarm: "false",
+            reminderOffsetMinutes: String(
+              medication?.schedule?.reminderOffsetMinutes ?? 0,
+            ),
+            reAlarmAfterMinutes: String(getReAlarmAfterMinutes(medication)),
+          },
+        });
+      }
+
+      const reAlarmMinutes = getReAlarmAfterMinutes(medication);
+      if (reAlarmMinutes <= 0) continue;
+
+      const reAlarmAt = new Date(
+        scheduledAt.getTime() + reAlarmMinutes * 60000,
+      );
+      if (!isReminderActiveNow(reAlarmAt, now)) continue;
+
+      candidates.push({
+        triggerAt: reAlarmAt.getTime(),
+        params: {
+          kind: "MEDICATION",
+          userId,
+          medId: String(medication?.id ?? ""),
+          alarmId: buildMedicationAlarmId(
+            String(medication?.id ?? ""),
+            medicationDate,
+            medicationTime,
+            `re:${reAlarmMinutes}`,
+          ),
+          name: String(medication?.name ?? ""),
+          dose: String(medication?.dose ?? ""),
+          notes: String(medication?.notes ?? ""),
+          date: medicationDate,
+          time: medicationTime,
+          isReAlarm: "true",
+          reminderOffsetMinutes: String(
+            medication?.schedule?.reminderOffsetMinutes ?? 0,
+          ),
+          reAlarmAfterMinutes: String(reAlarmMinutes),
+        },
+      });
+    }
+
+    candidates.sort((a, b) => b.triggerAt - a.triggerAt);
+    return candidates[0]?.params ?? null;
+  }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!accessChecked || !hasAccess) return;
+
+      let cancelled = false;
+      resolvedRef.current = false;
+      stopAllAudio();
+      setSaving(false);
+
+      const loadReminder = async () => {
+        setLoadingReminder(true);
+
+        if (incomingReminder) {
+          if (!cancelled) {
+            setResolvedReminder(incomingReminder);
+            setLoadingReminder(false);
+          }
+          return;
+        }
+
+        const nextReminder = await resolveCurrentReminder();
+
+        if (!cancelled) {
+          setResolvedReminder(nextReminder);
+          setLoadingReminder(false);
+        }
+      };
+
+      void loadReminder();
+
+      return () => {
+        cancelled = true;
+        stopAllAudio();
+      };
+    }, [
+      accessChecked,
+      hasAccess,
+      incomingReminder,
+      resolveCurrentReminder,
+      stopAllAudio,
+    ]),
+  );
+
   const postHistory = React.useCallback(
-    async (status: HistoryStatus) => {
-      const userId = params.userId ?? "";
-      const dateIso = toIsoDate(params.date);
-      const time = params.time ?? null;
+    async (nextStatus: HistoryStatus) => {
+      const userId = reminder?.userId ?? "";
+      const dateIso = toIsoDate(reminder?.date);
+      const time = reminder?.time ?? null;
 
       if (!userId || !dateIso) return;
 
@@ -260,24 +657,24 @@ export default function ReminderScreen() {
         userId,
         name:
           kind === "MEDICATION"
-            ? (params.name ?? "Medicine")
-            : (params.title ?? "Appointment"),
+            ? (reminder?.name ?? "Medicine")
+            : (reminder?.title ?? "Appointment"),
         type: kind,
-        dose: kind === "MEDICATION" ? (params.dose ?? null) : null,
+        dose: kind === "MEDICATION" ? (reminder?.dose ?? null) : null,
         date: dateIso,
         time,
-        status,
-        notes: params.notes ?? null,
+        status: nextStatus,
+        notes: reminder?.notes ?? null,
       });
     },
     [
-      params.userId,
-      params.date,
-      params.time,
-      params.name,
-      params.title,
-      params.dose,
-      params.notes,
+      reminder?.date,
+      reminder?.dose,
+      reminder?.name,
+      reminder?.notes,
+      reminder?.time,
+      reminder?.title,
+      reminder?.userId,
       kind,
     ],
   );
@@ -286,11 +683,11 @@ export default function ReminderScreen() {
     async (nextStatus: HistoryStatus) => {
       if (nextStatus !== "COMPLETED" && nextStatus !== "SKIPPED") return;
 
-      const userId = String(params.userId ?? "").trim();
+      const userId = String(reminder?.userId ?? "").trim();
       if (!userId) return;
 
       if (kind === "MEDICATION") {
-        const medId = String(params.medId ?? "").trim();
+        const medId = String(reminder?.medId ?? "").trim();
         if (!medId) return;
 
         let medication = (await medicationsApi.getCached(userId)).find(
@@ -312,26 +709,26 @@ export default function ReminderScreen() {
       }
 
       if (kind === "APPOINTMENT") {
-        const apptId = String(params.apptId ?? "").trim();
+        const apptId = String(reminder?.apptId ?? "").trim();
         if (!apptId) return;
 
         await appointmentsApi.delete(userId, apptId);
         await rescheduleCurrentUserNotifications();
       }
     },
-    [kind, params.apptId, params.medId, params.userId],
+    [kind, reminder?.apptId, reminder?.medId, reminder?.userId],
   );
 
-  const buildMedicationAlarmId = React.useCallback(
+  const buildSiblingMedicationAlarmId = React.useCallback(
     (suffix: "main" | `re:${number}`) => {
-      const medId = String(params.medId ?? "").trim();
-      const dayYmd = String(params.date ?? "").trim();
-      const time = String(params.time ?? "").trim();
+      const medId = String(reminder?.medId ?? "").trim();
+      const dayYmd = String(reminder?.date ?? "").trim();
+      const time = String(reminder?.time ?? "").trim();
       if (!medId || !dayYmd || !time) return "";
 
-      return `med:${toAlarmIdPart(medId)}:${toAlarmIdPart(dayYmd)}:${toAlarmIdPart(time)}:${suffix}`;
+      return buildMedicationAlarmId(medId, dayYmd, time, suffix);
     },
-    [params.date, params.medId, params.time],
+    [reminder?.date, reminder?.medId, reminder?.time],
   );
 
   const cancelAlarmById = React.useCallback(async (alarmId?: string) => {
@@ -344,18 +741,18 @@ export default function ReminderScreen() {
 
   const finalizeReminder = React.useCallback(
     async (nextStatus: HistoryStatus) => {
-      if (resolvedRef.current) return;
+      if (!reminder || resolvedRef.current) return;
 
       resolvedRef.current = true;
       setSaving(true);
       stopAllAudio();
 
-      await cancelAlarmById(params.alarmId);
+      await cancelAlarmById(reminder.alarmId);
 
       if (kind === "MEDICATION" && reAlarmAfterMinutes > 0) {
         const pairedAlarmId = isReAlarm
-          ? buildMedicationAlarmId("main")
-          : buildMedicationAlarmId(`re:${reAlarmAfterMinutes}`);
+          ? buildSiblingMedicationAlarmId("main")
+          : buildSiblingMedicationAlarmId(`re:${reAlarmAfterMinutes}`);
         await cancelAlarmById(pairedAlarmId);
       }
 
@@ -370,19 +767,20 @@ export default function ReminderScreen() {
       if (mountedRef.current) {
         setSaving(false);
       }
+
       await navigateToDashboard();
     },
     [
-      buildMedicationAlarmId,
+      buildSiblingMedicationAlarmId,
       cancelAlarmById,
       isReAlarm,
       kind,
       navigateToDashboard,
-      params.alarmId,
       postHistory,
       reAlarmAfterMinutes,
-      syncResolvedItem,
+      reminder,
       stopAllAudio,
+      syncResolvedItem,
     ],
   );
 
@@ -395,11 +793,9 @@ export default function ReminderScreen() {
       return;
     }
 
-    // First unattended medication alarm only dismisses the current ring.
-    // The history entry becomes MISSED only if the retry alarm is also unattended.
     resolvedRef.current = true;
     stopAllAudio();
-    await cancelAlarmById(params.alarmId);
+    await cancelAlarmById(reminder?.alarmId);
     await navigateToDashboard();
   }, [
     cancelAlarmById,
@@ -408,42 +804,44 @@ export default function ReminderScreen() {
     isReAlarm,
     kind,
     navigateToDashboard,
-    params.alarmId,
+    reminder?.alarmId,
     stopAllAudio,
   ]);
 
   const startAlarmSession = React.useCallback(() => {
-    if (resolvedRef.current) return;
-
-    const RING_MS = 3 * 60 * 1000;
+    if (!reminder || resolvedRef.current) return;
 
     clearTimers();
     startAlarmOnly();
 
     autoResolveTimerRef.current = setTimeout(() => {
       void handleUnattendedAlarm();
-    }, RING_MS);
-  }, [clearTimers, handleUnattendedAlarm, startAlarmOnly]);
+    }, ACTIVE_REMINDER_WINDOW_MS);
+  }, [
+    clearTimers,
+    handleUnattendedAlarm,
+    reminder,
+    startAlarmOnly,
+  ]);
 
   React.useEffect(() => {
-    if (!hasAccess) return;
+    if (!hasAccess || !reminder || loadingReminder) return;
+
     startAlarmSession();
     return () => stopAllAudio();
-  }, [hasAccess, startAlarmSession, stopAllAudio]);
+  }, [hasAccess, loadingReminder, reminder, startAlarmSession, stopAllAudio]);
 
   React.useEffect(() => {
-    if (!hasAccess) return;
-    // keep sound alive if loaded but not playing during the active reminder window
+    if (!hasAccess || !reminder) return;
     if ((status as any)?.isLoaded === false) return;
     if ((status as any)?.loading === true) return;
-
     if (!alarmActiveRef.current) return;
     if (stopRef.current) return;
 
     try {
       if (!(status as any)?.playing) player.play();
     } catch {}
-  }, [hasAccess, status, player]);
+  }, [hasAccess, reminder, status, player]);
 
   const handleTaken = async () => {
     if (saving) return;
@@ -455,7 +853,7 @@ export default function ReminderScreen() {
     await finalizeReminder("SKIPPED");
   };
 
-  if (!accessChecked) {
+  if (!accessChecked || (hasAccess && loadingReminder)) {
     return (
       <SafeAreaView
         edges={["top", "bottom"]}
@@ -471,6 +869,53 @@ export default function ReminderScreen() {
 
   if (!hasAccess) {
     return null;
+  }
+
+  if (!reminder) {
+    return (
+      <SafeAreaView
+        edges={["top", "bottom"]}
+        style={[styles.container, { backgroundColor: colors.background }]}
+      >
+        <View
+          style={[
+            styles.emptyCard,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <View style={[styles.iconCircle, { backgroundColor: colors.tint }]}>
+            <Ionicons name="alarm-outline" size={40} color="#fff" />
+          </View>
+
+          <ThemedText style={[styles.emptyTitle, { color: colors.text }]}>
+            No active reminder right now
+          </ThemedText>
+
+          <ThemedText style={[styles.emptyBody, { color: colors.icon }]}>
+            This page will show a medication or appointment alarm when its
+            scheduled time is currently active.
+          </ThemedText>
+
+          <Pressable
+            style={[
+              styles.refreshButton,
+              { backgroundColor: colors.tint },
+            ]}
+            onPress={() => {
+              setLoadingReminder(true);
+              void resolveCurrentReminder().then((nextReminder) => {
+                if (!mountedRef.current) return;
+                setResolvedReminder(nextReminder);
+                setLoadingReminder(false);
+              });
+            }}
+          >
+            <Ionicons name="refresh" size={18} color={colors.buttonText} />
+            <ThemedText style={styles.refreshButtonText}>Check Again</ThemedText>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
   }
 
   return (
@@ -506,11 +951,11 @@ export default function ReminderScreen() {
           adjustsFontSizeToFit
           minimumFontScale={0.8}
         >
-          {formatTime12h(params.time)}
+          {formatTime12h(reminder.time)}
         </ThemedText>
 
         <ThemedText style={[styles.date, { color: colors.icon }]}>
-          {params.date ?? ""}
+          {reminder.date ?? ""}
         </ThemedText>
 
         <View
@@ -611,6 +1056,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  emptyCard: {
+    width: "100%",
+    maxWidth: 420,
+    borderRadius: 28,
+    borderWidth: 1,
+    paddingVertical: 40,
+    paddingHorizontal: 24,
+    alignItems: "center",
+  },
   iconCircle: {
     width: 110,
     height: 110,
@@ -676,5 +1130,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     borderRadius: 14,
     borderWidth: 1,
+  },
+  emptyTitle: {
+    fontSize: 24,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  emptyBody: {
+    marginTop: 10,
+    textAlign: "center",
+    lineHeight: 20,
+    maxWidth: 320,
+  },
+  refreshButton: {
+    marginTop: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 20,
+  },
+  refreshButtonText: {
+    color: "#fff",
+    fontWeight: "700",
   },
 });

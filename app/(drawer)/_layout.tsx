@@ -89,6 +89,8 @@ function getTitle(routeName: string) {
   switch (routeName) {
     case "dashboard-patient-view":
       return "Dashboard";
+    case "reminder":
+      return "Reminder";
     default:
       return "";
   }

@@ -152,8 +152,6 @@ function Navigation() {
     let fgSub: Notifications.Subscription | undefined;
     let linkSub: { remove(): void } | undefined;
     let isMounted = true;
-    let exactAlarmPrompted = false;
-    let fullScreenPrompted = false;
     let notificationPrompted = false;
     let lastAlarmKey = "";
     let lastAlarmAt = 0;
@@ -206,8 +204,7 @@ function Navigation() {
       if (!isPatientRole(role)) return;
 
       const exactAlarmAllowed = await androidAlarm.canScheduleExactAlarms();
-      if (!exactAlarmAllowed && !exactAlarmPrompted) {
-        exactAlarmPrompted = true;
+      if (!exactAlarmAllowed) {
         Alert.alert(
           "Allow exact alarms",
           "NotiMed needs exact alarm access so medication reminders can ring at the scheduled time.",
@@ -225,8 +222,7 @@ function Navigation() {
       }
 
       const fullScreenAllowed = await androidAlarm.canUseFullScreenIntent();
-      if (!fullScreenAllowed && !fullScreenPrompted) {
-        fullScreenPrompted = true;
+      if (!fullScreenAllowed) {
         Alert.alert(
           "Allow full-screen alarms",
           "Enable full-screen alarm access so reminders can appear over the lock screen when they fire.",

@@ -13,6 +13,7 @@ import { medicationsApi } from "@/services/medicationsApi";
 
 const SCHEDULED_ALARMS_KEY = "scheduledAlarmEntries:v2";
 const LEGACY_SCHEDULED_IDS_KEY = "scheduledNotificationIds:v1";
+const ANDROID_BACKUP_NOTIFICATION_DELAY_MS = 15000;
 let scheduleQueue: Promise<void> = Promise.resolve();
 
 type ScheduledAlarmEntry = {
@@ -344,6 +345,7 @@ async function scheduleAppointmentAlarm(
   a: any,
   dt: Date,
   useNativeAndroidAlarm: boolean,
+  scheduleBackupNotification: boolean,
   entries: ScheduledAlarmEntry[],
 ) {
   const alarmId = buildAppointmentAlarmId(a);
@@ -361,18 +363,32 @@ async function scheduleAppointmentAlarm(
   };
 
   if (useNativeAndroidAlarm) {
-    await androidAlarm.scheduleExactAlarm({
-      alarmId,
-      triggerAtMillis: dt.getTime(),
-      title: `Appointment: ${a.title}`,
-      body: a.notes ?? "Open NotiMed to view details.",
-      channelId: APPOINTMENT_CHANNEL_ID,
-      soundName: "appointment.mp3",
-      data,
-    });
-    entries.push({ alarmId, notificationId: alarmId });
-    return;
+    try {
+      await androidAlarm.scheduleExactAlarm({
+        alarmId,
+        triggerAtMillis: dt.getTime(),
+        title: `Appointment: ${a.title}`,
+        body: a.notes ?? "Open NotiMed to view details.",
+        channelId: APPOINTMENT_CHANNEL_ID,
+        soundName: "appointment.mp3",
+        data,
+      });
+      if (!scheduleBackupNotification) {
+        entries.push({ alarmId, notificationId: alarmId });
+        return;
+      }
+    } catch (error) {
+      console.warn(
+        `[alarmScheduler] Native appointment alarm failed for ${alarmId}; falling back to Expo notifications.`,
+        error,
+      );
+    }
   }
+
+  const notificationDate =
+    useNativeAndroidAlarm && scheduleBackupNotification
+      ? new Date(dt.getTime() + ANDROID_BACKUP_NOTIFICATION_DELAY_MS)
+      : dt;
 
   const id = await Notifications.scheduleNotificationAsync({
     content: {
@@ -383,7 +399,7 @@ async function scheduleAppointmentAlarm(
     },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
-      date: dt,
+      date: notificationDate,
       channelId: APPOINTMENT_CHANNEL_ID,
     },
   });
@@ -398,6 +414,7 @@ async function scheduleMedicationAlarm(opts: {
   isReAlarm: boolean;
   reAlarmAfterMinutes: number;
   useNativeAndroidAlarm: boolean;
+  scheduleBackupNotification: boolean;
   entries: ScheduledAlarmEntry[];
 }) {
   const { medication: m, dayYmd, triggerAt, isReAlarm, reAlarmAfterMinutes } =
@@ -428,18 +445,32 @@ async function scheduleMedicationAlarm(opts: {
   };
 
   if (opts.useNativeAndroidAlarm) {
-    await androidAlarm.scheduleExactAlarm({
-      alarmId,
-      triggerAtMillis: triggerAt.getTime(),
-      title,
-      body,
-      channelId: MEDICATION_CHANNEL_ID,
-      soundName: "medication_v2.wav",
-      data,
-    });
-    opts.entries.push({ alarmId, notificationId: alarmId });
-    return;
+    try {
+      await androidAlarm.scheduleExactAlarm({
+        alarmId,
+        triggerAtMillis: triggerAt.getTime(),
+        title,
+        body,
+        channelId: MEDICATION_CHANNEL_ID,
+        soundName: "medication_v2.wav",
+        data,
+      });
+      if (!opts.scheduleBackupNotification) {
+        opts.entries.push({ alarmId, notificationId: alarmId });
+        return;
+      }
+    } catch (error) {
+      console.warn(
+        `[alarmScheduler] Native medication alarm failed for ${alarmId}; falling back to Expo notifications.`,
+        error,
+      );
+    }
   }
+
+  const notificationDate =
+    opts.useNativeAndroidAlarm && opts.scheduleBackupNotification
+      ? new Date(triggerAt.getTime() + ANDROID_BACKUP_NOTIFICATION_DELAY_MS)
+      : triggerAt;
 
   const id = await Notifications.scheduleNotificationAsync({
     content: {
@@ -450,7 +481,7 @@ async function scheduleMedicationAlarm(opts: {
     },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
-      date: triggerAt,
+      date: notificationDate,
       channelId: MEDICATION_CHANNEL_ID,
     },
   });
@@ -472,10 +503,13 @@ async function rescheduleAllFromCacheInternal(opts: {
   const horizonDays = opts.horizonDays ?? 14;
   const now = new Date();
   const end = addDays(now, horizonDays);
-  const useNativeAndroidAlarm =
-    Platform.OS === "android" &&
-    androidAlarm.isAvailable &&
-    (await androidAlarm.canScheduleExactAlarms());
+  const useNativeAndroidAlarm = Platform.OS === "android" && androidAlarm.isAvailable;
+  const exactAlarmAllowed =
+    useNativeAndroidAlarm && (await androidAlarm.canScheduleExactAlarms());
+  const scheduleBackupNotification =
+    Platform.OS !== "android" ||
+    !useNativeAndroidAlarm ||
+    !exactAlarmAllowed;
 
   await cancelPreviouslyScheduled();
 
@@ -488,7 +522,13 @@ async function rescheduleAllFromCacheInternal(opts: {
       if (dt.getTime() <= Date.now() + 1000) continue;
       if (dt.getTime() > end.getTime()) continue;
 
-      await scheduleAppointmentAlarm(a, dt, useNativeAndroidAlarm, entries);
+      await scheduleAppointmentAlarm(
+        a,
+        dt,
+        useNativeAndroidAlarm,
+        scheduleBackupNotification,
+        entries,
+      );
     } catch {}
   }
 
@@ -516,6 +556,7 @@ async function rescheduleAllFromCacheInternal(opts: {
             isReAlarm: false,
             reAlarmAfterMinutes: 0,
             useNativeAndroidAlarm,
+            scheduleBackupNotification,
             entries,
           });
         }
@@ -537,6 +578,7 @@ async function rescheduleAllFromCacheInternal(opts: {
           isReAlarm: true,
           reAlarmAfterMinutes,
           useNativeAndroidAlarm,
+          scheduleBackupNotification,
           entries,
         });
       }
